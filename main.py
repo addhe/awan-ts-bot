@@ -337,7 +337,7 @@ def get_min_trade_amount_and_notional(exchange, symbol):
 
         if 'info' in market and 'filters' in market['info']:
             for f in market['info']['filters']:
-                if f['filterType'] == 'MIN_NOTIONAL':
+                if f['filterType'] == 'NOTIONAL':
                     min_notional_value = float(f['minNotional'])
                     break
 
