@@ -205,6 +205,21 @@ def execute_trade(exchange, side, amount, symbol):
         logging.error(f"Failed to execute {side} order: {str(e)}")
         send_telegram_notification(f"Failed to execute {side} order: {str(e)}")
 
+def get_min_trade_amount(exchange, symbol):
+    """ Fetch the minimum trade amount for a specific symbol from the exchange. """
+    try:
+        # Fetch the market info for the specific symbol
+        markets = safe_api_call(exchange.load_markets)
+        market = markets.get(symbol)
+        if market:
+            return market['limits']['amount']['min']
+        else:
+            logging.error(f"Market data not available for symbol: {symbol}")
+            return None
+    except Exception as e:
+        logging.error(f"Failed to fetch market info: {str(e)}")
+        return None
+
 def main(performance):
     exchange = initialize_exchange()
     symbol_base = CONFIG['symbol'].split('/')[0]  # Extract base currency (like ETH)
@@ -263,8 +278,12 @@ def main(performance):
         logging.info(f"Estimated fee: {estimated_fee} {symbol_base}")
         logging.info(f"Amount to trade after fee: {amount_to_trade} {symbol_base}")
 
-        min_trade_usd = 10.00  # Assuming a $10 minimum trade amount
-        min_trade_amount = min_trade_usd / latest_close_price  # Calculate symbol_base equivalent
+        # Get dynamic minimum trade amount
+        min_trade_amount = get_min_trade_amount(exchange, CONFIG['symbol'])
+
+        if min_trade_amount is None:
+            logging.warning("Unable to fetch dynamic minimum trade amount; skipping trade execution.")
+            return
 
         # Add precision handling before executing the trade
         decimals_allowed = 6  # Assume the allowed place for ETH/USDT; verify with Binance API
