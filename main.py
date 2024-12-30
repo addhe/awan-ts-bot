@@ -286,7 +286,7 @@ def main(performance):
             return
 
         # Add precision handling before executing the trade
-        decimals_allowed = 6  # Assume the allowed place for ETH/USDT; verify with Binance API
+        decimals_allowed = 4  # Assume the allowed place for ETH/USDT; verify with Binance API
         amount_to_trade_formatted = round(amount_to_trade, decimals_allowed)
         logging.info(f"Formatted amount to trade: {amount_to_trade_formatted} {symbol_base}")
 
