@@ -225,6 +225,7 @@ def main(performance):
         balance = safe_api_call(exchange.fetch_balance)
         if balance is not None and 'USDT' in balance and 'free' in balance['USDT']:
             usdt_balance = balance['USDT']['free']
+            logging.info(f"Available USDT balance: {usdt_balance}")
         else:
             error_message = "Failed to retrieve balance"
             logging.error(error_message)
@@ -248,11 +249,16 @@ def main(performance):
         ema_short_last, ema_short_prev = market_data['ema_short'].iloc[-1], market_data['ema_short'].iloc[-2]
         ema_long_last, ema_long_prev = market_data['ema_long'].iloc[-1], market_data['ema_long'].iloc[-2]
 
-        amount_to_trade = CONFIG['risk_percentage'] * usdt_balance / 100 / market_data['close'].iloc[-1]
+        latest_close_price = market_data['close'].iloc[-1]
+        logging.info(f"Latest close price: {latest_close_price}")
+        
+        amount_to_trade = (CONFIG['risk_percentage'] / 100) * usdt_balance / latest_close_price
+        logging.info(f"Calculated trade amount: {amount_to_trade}")
 
-        min_trade_amount = 0.001  # Adjust based on exchange minimum
+        min_trade_usd = 10.00  # Assuming a $10 minimum trade amount
+        min_trade_amount = min_trade_usd / latest_close_price  # Calculate BTC equivalent
         if amount_to_trade < min_trade_amount:
-            logging.warning("Trade amount is below minimum threshold")
+            logging.warning(f"Trade amount {amount_to_trade} BTC is below minimum threshold {min_trade_amount} BTC")
             return
 
         if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:
