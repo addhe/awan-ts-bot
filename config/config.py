@@ -24,7 +24,6 @@ CONFIG = {
     'atr_period': 10,
     'max_volatility_threshold': 0.04,
     'min_volume_usdt': 5000,  # Turunkan ke 10,000 USDT
-    'excluded_hours': [0, 1, 23],
     'max_atr_threshold': 0.5,
     'vwap_period': 14,
     'initial_profit_for_trailing_stop': 0.01,  # 1% profit before trailing stop becomes active
