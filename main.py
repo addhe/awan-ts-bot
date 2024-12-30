@@ -207,6 +207,8 @@ def execute_trade(exchange, side, amount, symbol):
 
 def main(performance):
     exchange = initialize_exchange()
+    symbol_base = CONFIG['symbol'].split('/')[0]  # Extract base currency (like ETH)
+
     if exchange is None:
         logging.error("Exchange initialization failed")
         return
@@ -253,12 +255,12 @@ def main(performance):
         logging.info(f"Latest close price: {latest_close_price}")
         
         amount_to_trade = (CONFIG['risk_percentage'] / 100) * usdt_balance / latest_close_price
-        logging.info(f"Calculated trade amount: {amount_to_trade}")
+        logging.info(f"Calculated trade amount: {amount_to_trade} {symbol_base}")
 
         min_trade_usd = 10.00  # Assuming a $10 minimum trade amount
         min_trade_amount = min_trade_usd / latest_close_price  # Calculate BTC equivalent
         if amount_to_trade < min_trade_amount:
-            logging.warning(f"Trade amount {amount_to_trade} BTC is below minimum threshold {min_trade_amount} BTC")
+            logging.warning(f"Trade amount {amount_to_trade} {symbol_base} is below minimum threshold {min_trade_amount} BTC")
             return
 
         if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:
