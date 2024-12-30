@@ -5,8 +5,8 @@ from src.modules.fetch_position_details import fetch_position_details
 from src.modules.initialize_exchange import initialize_exchange
 
 TELEGRAM_CONFIG = {
-    'bot_token': os.environ.get('TELEGRAM_BOT_TOKEN'),
-    'chat_id': os.environ.get('TELEGRAM_CHAT_ID')
+    'bot_token': os.environ.get('TELEGRAM_BOT_SPOT_TOKEN'),
+    'chat_id': os.environ.get('TELEGRAM_CHAT_SPOT_ID')
 }
 
 def send_telegram_notification(message, exchange=None):

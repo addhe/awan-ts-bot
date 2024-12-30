@@ -22,7 +22,9 @@ API_KEY = os.environ.get('API_KEY_BINANCE')
 API_SECRET = os.environ.get('API_SECRET_BINANCE')
 
 if API_KEY is None or API_SECRET is None:
+    error_message = 'API credentials not found in environment variables'
     logging.error('API credentials not found in environment variables')
+    send_telegram_notification(error_message)
     exit(1)
 
 class PerformanceMetrics:
@@ -119,6 +121,47 @@ class PerformanceMetrics:
 
         return True
 
+def initialize_exchange():
+    try:
+        exchange = ccxt.binance({
+            'apiKey': API_KEY,
+            'secret': API_SECRET,
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'spot'
+            }
+        })
+        if CONFIG.get('use_testnet', False):
+            exchange.set_sandbox_mode(True)  # Enable testnet mode
+        return exchange
+    except ccxt.BaseError as e:
+        error_message = f"Failed to initialize exchange: {str(e)}"
+        logging.error(error_message)
+        send_telegram_notification(error_message)
+        return None
+
+def safe_api_call(func, *args, **kwargs):
+    try:
+        return func(*args, **kwargs)
+    except ccxt.NetworkError as e:
+        logging.warning(f"Network error: {str(e)}. Retrying...")
+        time.sleep(10)  # Wait before retrying
+        return safe_api_call(func, *args, **kwargs)
+    except ccxt.ExchangeError as e:
+        logging.error(f"Exchange error: {str(e)}")
+        return None
+
+def fetch_market_data(exchange, symbol, timeframe):
+    try:
+        candles = safe_api_call(exchange.fetch_ohlcv, symbol, timeframe)
+        if candles is None:
+            return None
+        df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        return df
+    except Exception as e:
+        logging.error(f"Failed to fetch market data: {str(e)}")
+        return None
+
 def validate_config():
     try:
         required_fields = [
@@ -143,36 +186,73 @@ def validate_config():
         logging.error(f"Config validation failed: {e}")
         return False
 
+def calculate_ema(df, period, column='close'):
+    return df[column].ewm(span=period, adjust=False).mean()
+
+def execute_trade(exchange, side, amount, symbol):
+    try:
+        if side == "buy":
+            order = exchange.create_market_buy_order(symbol, amount)
+        elif side == "sell":
+            order = exchange.create_market_sell_order(symbol, amount)
+        logging.info(f"Executed {side} order: {order}")
+        send_telegram_notification(f"Executed {side} order: {order}")
+    except Exception as e:
+        logging.error(f"Failed to execute {side} order: {str(e)}")
+        send_telegram_notification(f"Failed to execute {side} order: {str(e)}")
+
 def main(performance):
-    exchange = None
+    exchange = initialize_exchange()
+    if exchange is None:
+        logging.error("Exchange initialization failed")
+        return
+
     try:
         if not validate_config():
             logging.error("Configuration validation failed")
             return
 
-        exchange = ccxt.binance({
-            'apiKey': API_KEY,
-            'secret': API_SECRET
-        })
-        
-        performance = PerformanceMetrics()
-
         if not performance.can_trade():
+            message = "Trading limits reached"
             logging.info("Trading limits reached")
+            send_telegram_notification(message)
             return
 
-        balance = exchange.fetch_balance()
+        balance = safe_api_call(exchange.fetch_balance)
         if balance['USDT']['free'] < CONFIG['min_balance']:
-            logging.error(f"Insufficient balance: {balance['USDT']['free']} USDT")
+            error_message = f"Insufficient balance: {balance['USDT']['free']} USDT"
+            logging.error(error_message)
+            send_telegram_notification(error_message)
             return
 
-        # Fetching and processing market data would go here
-        
+        market_data = fetch_market_data(exchange, CONFIG['symbol'], CONFIG['timeframe'])
+        if market_data is None:
+            logging.error("Failed to retrieve market data")
+            return
+
+        market_data['ema_short'] = calculate_ema(market_data, CONFIG['ema_short_period'])
+        market_data['ema_long'] = calculate_ema(market_data, CONFIG['ema_long_period'])
+
+        ema_short_last, ema_short_prev = market_data['ema_short'].iloc[-1], market_data['ema_short'].iloc[-2]
+        ema_long_last, ema_long_prev = market_data['ema_long'].iloc[-1], market_data['ema_long'].iloc[-2]
+
+        amount_to_trade = CONFIG['risk_percentage'] * balance['USDT']['free'] / 100 / market_data['close'].iloc[-1]
+
+        if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:
+            logging.info("Buy signal detected")
+            execute_trade(exchange, "buy", amount_to_trade, CONFIG['symbol'])
+
+        elif ema_short_prev > ema_long_prev and ema_short_last < ema_long_last:
+            logging.info("Sell signal detected")
+            execute_trade(exchange, "sell", amount_to_trade, CONFIG['symbol'])
+
     except Exception as e:
-        logging.error(f'Critical error in main loop: {str(e)}')
+        error_message = f'Critical error in main loop: {str(e)}'
+        logging.error(error_message)
+        send_telegram_notification(error_message)
 
 if __name__ == '__main__':
     performance = PerformanceMetrics()
     while True:
         main(performance)
-        time.sleep(60)  # execute the loop every minute
+        time.sleep(60)
