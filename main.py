@@ -182,7 +182,20 @@ def validate_config():
             
         if CONFIG['timeframe'] not in ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h']:
             raise ValueError("Invalid timeframe")
-            
+
+        # Additional Validations
+        if not (0 < CONFIG['risk_percentage'] <= 100):
+            raise ValueError("Risk percentage must be between 0 and 100.")
+
+        if not (0 < CONFIG['fee_rate'] < 1):
+            raise ValueError("Fee rate must be a percentage less than 1.")
+
+        if CONFIG['max_daily_loss_percent'] <= 0 or CONFIG['max_drawdown_percent'] <= 0:
+            raise ValueError("Max daily loss and max drawdown must be positive numbers.")
+
+        if CONFIG['ema_short_period'] <= 0 or CONFIG['ema_long_period'] <= 0:
+            raise ValueError("EMA periods must be positive integers.")
+
         logging.info("Config validation passed")
         return True
         
@@ -295,11 +308,11 @@ def main(performance):
             return
 
         if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:
-            logging.info("Buy signal detected")
+            logging.info(f"Buy signal confirmed: EMA short {ema_short_last:.4f} over EMA long {ema_long_last:.4f}")
             execute_trade(exchange, "buy", amount_to_trade_formatted, CONFIG['symbol'])
 
         elif ema_short_prev > ema_long_prev and ema_short_last < ema_long_last:
-            logging.info("Sell signal detected")
+            logging.info(f"Sell signal confirmed: EMA short {ema_short_last:.4f} under EMA long {ema_long_last:.4f}")
             execute_trade(exchange, "sell", amount_to_trade_formatted, CONFIG['symbol'])
 
     except Exception as e:
