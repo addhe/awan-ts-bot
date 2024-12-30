@@ -1,4 +1,3 @@
-# main_spot.py
 import ccxt
 import os
 import logging
@@ -37,17 +36,20 @@ class PerformanceMetrics:
             with open(self.metrics_file, 'r') as f:
                 self.metrics = json.load(f)
         except FileNotFoundError:
-            self.metrics = {
-                'total_trades': 0,
-                'winning_trades': 0,
-                'total_profit': 0,
-                'max_drawdown': 0,
-                'daily_trades': 0,
-                'daily_loss': 0,
-                'trade_history': [],
-                'last_reset_date': datetime.now().strftime('%Y-%m-%d')
-            }
-            self.save_metrics()
+            self.initialize_metrics()
+
+    def initialize_metrics(self):
+        self.metrics = {
+            'total_trades': 0,
+            'winning_trades': 0,
+            'total_profit': 0,
+            'max_drawdown': 0,
+            'daily_trades': 0,
+            'daily_loss': 0,
+            'trade_history': [],
+            'last_reset_date': datetime.now().strftime('%Y-%m-%d')
+        }
+        self.save_metrics()
 
     def save_metrics(self):
         with open(self.metrics_file, 'w') as f:
@@ -83,11 +85,9 @@ class PerformanceMetrics:
     def calculate_metrics(self):
         if self.metrics['total_trades'] > 0:
             self.metrics['win_rate'] = (self.metrics['winning_trades'] / self.metrics['total_trades']) * 100
-
-            if len(self.metrics['trade_history']) > 0:
-                profits = [trade['profit'] for trade in self.metrics['trade_history']]
-                self.metrics['sharpe_ratio'] = self.calculate_sharpe_ratio(profits)
-                self.metrics['max_drawdown'] = self.calculate_max_drawdown(profits)
+            profits = [trade['profit'] for trade in self.metrics['trade_history']]
+            self.metrics['sharpe_ratio'] = self.calculate_sharpe_ratio(profits)
+            self.metrics['max_drawdown'] = self.calculate_max_drawdown(profits)
 
     @staticmethod
     def calculate_sharpe_ratio(profits, risk_free_rate=0.02):
@@ -110,50 +110,13 @@ class PerformanceMetrics:
         if self.metrics['daily_trades'] >= CONFIG['max_daily_trades']:
             logging.warning('Maximum daily trades reached')
             return False
-
         if self.metrics['daily_loss'] >= (CONFIG['max_daily_loss_percent'] / 100):
             logging.warning('Maximum daily loss reached')
             return False
-
         if self.metrics['max_drawdown'] >= CONFIG['max_drawdown_percent']:
             logging.warning('Maximum drawdown reached')
             return False
-
         return True
-
-def get_min_trade_amount_and_notional(exchange, symbol):
-    """Fetch minimum trade amount and notional value for a specific symbol."""
-    try:
-        markets = safe_api_call(exchange.load_markets)
-        if not markets:
-            logging.error("Markets not loaded.")
-            return None, None
-
-        market = markets.get(symbol)
-        if not market:
-            logging.error(f"Market data not available for symbol: {symbol}")
-            return None, None
-
-        logging.debug(f"Market data for {symbol}: {market}")
-
-        min_amount = market['limits']['amount'].get('min')
-        min_notional_value = None
-
-        if 'info' in market and 'filters' in market['info']:
-            for f in market['info']['filters']:
-                if f['filterType'] == 'NOTIONAL':
-                    min_notional_value = float(f['minNotional'])
-                    break
-
-        if min_amount is None:
-            logging.error(f"Minimum amount not found for symbol: {symbol}")
-        if min_notional_value is None:
-            logging.error(f"NOTIONAL filter not found for symbol: {symbol}")
-
-        return min_amount, min_notional_value
-    except Exception as e:
-        logging.error(f"Failed to fetch market info: {str(e)}")
-        return None, None
 
 def initialize_exchange():
     try:
@@ -161,9 +124,7 @@ def initialize_exchange():
             'apiKey': API_KEY,
             'secret': API_SECRET,
             'enableRateLimit': True,
-            'options': {
-                'defaultType': 'spot'
-            }
+            'options': {'defaultType': 'spot'}
         })
         if CONFIG.get('use_testnet', False):
             exchange.set_sandbox_mode(True)  # Enable testnet mode
@@ -189,16 +150,39 @@ def safe_api_call(func, *args, **kwargs):
         logging.error(f"Exchange error: {str(e)}")
         return None
 
-def fetch_market_data(exchange, symbol, timeframe):
+def fetch_current_price(exchange, symbol):
     try:
-        candles = safe_api_call(exchange.fetch_ohlcv, symbol, timeframe)
-        if candles is None:
-            return None
-        df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        return df
+        ticker = safe_api_call(exchange.fetch_ticker, symbol)
+        return ticker['last']  # The last traded price
     except Exception as e:
-        logging.error(f"Failed to fetch market data: {str(e)}")
+        logging.error(f"Error fetching current price for {symbol}: {str(e)}")
         return None
+
+def get_original_buy_price(symbol, executed_qty, trade_history):
+    # Assuming you maintain a dictionary or similar structure to store trade history
+    try:
+        trades = trade_history.get(symbol, [])
+        total_cost = 0
+        total_qty = 0
+
+        for trade in trades:
+            if total_qty + trade['qty'] >= executed_qty:
+                portion_qty = executed_qty - total_qty
+                total_cost += portion_qty * trade['price']
+                total_qty += portion_qty
+                break
+            else:
+                total_cost += trade['qty'] * trade['price']
+                total_qty += trade['qty']
+
+        if total_qty < executed_qty:
+            logging.warning(f"Insufficient trade data for executed quantity: {executed_qty}")
+            return 0
+
+        return total_cost / executed_qty
+    except Exception as e:
+        logging.error(f"Error getting original buy price for {symbol}: {str(e)}")
+        return 0
 
 def validate_config():
     try:
@@ -206,18 +190,16 @@ def validate_config():
             'symbol', 'risk_percentage', 'min_balance',
             'max_daily_trades', 'max_daily_loss_percent'
         ]
-        
         for field in required_fields:
             if field not in CONFIG:
                 raise ValueError(f"Missing required config field: {field}")
-            
+
         if CONFIG['min_balance'] < 0:
             raise ValueError("Min balance cannot be negative")
-            
+
         if CONFIG['timeframe'] not in ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h']:
             raise ValueError("Invalid timeframe")
 
-        # Additional Validations
         if not (0 < CONFIG['risk_percentage'] <= 100):
             raise ValueError("Risk percentage must be between 0 and 100.")
 
@@ -232,7 +214,6 @@ def validate_config():
 
         logging.info("Config validation passed")
         return True
-        
     except Exception as e:
         logging.error(f"Config validation failed: {e}")
         return False
@@ -240,10 +221,33 @@ def validate_config():
 def calculate_ema(df, period, column='close'):
     return df[column].ewm(span=period, adjust=False).mean()
 
-def execute_trade(exchange, side, amount, symbol, performance):
+def calculate_profit(exchange, order, trade_history):
+    try:
+        if order is None:
+            return 0
+
+        executed_qty = float(order['filled'])
+        avg_price = float(order['price'])
+
+        current_price = fetch_current_price(exchange, order['symbol'])
+        if current_price is None:
+            return 0
+
+        if order['side'] == 'buy':
+            profit = (current_price - avg_price) * executed_qty
+        elif order['side'] == 'sell':
+            original_price = get_original_buy_price(order['symbol'], executed_qty, trade_history)
+            profit = (avg_price - original_price) * executed_qty
+
+        return profit
+    except Exception as e:
+        logging.error(f"Error calculating profit: {str(e)}")
+        return 0
+
+def execute_trade(exchange, side, amount, symbol, performance, trade_history):
     try:
         balance = safe_api_call(exchange.fetch_balance)
-        eth_balance = balance[symbol.split('/')[0]]['free']  # Get free ETH balance
+        eth_balance = balance[symbol.split('/')[0]]['free']
 
         if side == "sell" and eth_balance < amount:
             logging.warning(f"Not enough {symbol.split('/')[0]} to sell. Available: {eth_balance}, Required: {amount}")
@@ -257,8 +261,7 @@ def execute_trade(exchange, side, amount, symbol, performance):
         logging.info(f"Executed {side} order: {order}")
         send_telegram_notification(f"Executed {side} order: {order}")
 
-        # Determine profit/loss and trade success
-        profit = calculate_profit(order)
+        profit = calculate_profit(exchange, order, trade_history)
         won = profit > 0
         performance.update_trade(profit, won)
 
@@ -266,23 +269,29 @@ def execute_trade(exchange, side, amount, symbol, performance):
         logging.error(f"Failed to execute {side} order: {str(e)}")
         send_telegram_notification(f"Failed to execute {side} order: {str(e)}")
 
-def get_min_trade_amount(exchange, symbol):
-    """ Fetch the minimum trade amount for a specific symbol from the exchange. """
+def fetch_market_data(exchange, symbol, timeframe):
     try:
-        # Fetch the market info for the specific symbol
-        markets = safe_api_call(exchange.load_markets)
-        market = markets.get(symbol)
-        if market:
-            return market['limits']['amount']['min']
-        else:
-            logging.error(f"Market data not available for symbol: {symbol}")
+        candles = safe_api_call(exchange.fetch_ohlcv, symbol, timeframe)
+        if candles is None:
             return None
+        df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        return df
     except Exception as e:
-        logging.error(f"Failed to fetch market info: {str(e)}")
+        logging.error(f"Failed to fetch market data: {str(e)}")
         return None
 
+def execute_trade_if_profitable(exchange, symbol, current_price, performance, trade_history):
+    eth_balance = safe_api_call(exchange.fetch_balance)[symbol.split('/')[0]]['free']
+    if eth_balance <= 0:
+        logging.warning(f"No {symbol.split('/')[0]} to sell.")
+        return
+
+    historical_data = analyze_historical_data(exchange, symbol)
+    if check_profitability(historical_data, current_price, CONFIG['profit_target_percent']):
+        logging.info(f"Profit target met. Preparing to sell {eth_balance} {symbol.split('/')[0]}")
+        execute_trade(exchange, "sell", eth_balance, symbol, performance, trade_history)
+
 def analyze_historical_data(exchange, symbol, timeframe='1h', limit=100):
-    """Fetch historical market data and return a DataFrame."""
     try:
         candles = safe_api_call(exchange.fetch_ohlcv, symbol, timeframe, limit=limit)
         if candles is None:
@@ -297,12 +306,10 @@ def analyze_historical_data(exchange, symbol, timeframe='1h', limit=100):
         return None
 
 def check_profitability(historical_data, current_price, profit_target_percent):
-    """Determine if selling based on current price provides desired profit."""
     if historical_data is None or historical_data.empty:
         logging.error("Historical data is empty or None")
         return False
 
-    # Get the average price of the last N candles (as a simple strategy)
     average_price = historical_data['close'].mean()
     target_price = average_price * (1 + profit_target_percent / 100)
 
@@ -310,21 +317,9 @@ def check_profitability(historical_data, current_price, profit_target_percent):
 
     return current_price >= target_price
 
-def execute_trade_if_profitable(exchange, symbol, current_price, performance):
-    """Evaluate conditions and execute a sell trade if profitable."""
-    eth_balance = safe_api_call(exchange.fetch_balance)[symbol.split('/')[0]]['free']
-    if eth_balance <= 0:
-        logging.warning(f"No {symbol.split('/')[0]} to sell.")
-        return
-
-    historical_data = analyze_historical_data(exchange, symbol)
-    if check_profitability(historical_data, current_price, CONFIG['profit_target_percent']):
-        logging.info(f"Profit target met. Preparing to sell {eth_balance} {symbol.split('/')[0]}")
-        execute_trade(exchange, "sell", eth_balance, symbol, performance)
-
-def main(performance):
+def main(performance, trade_history):
     exchange = initialize_exchange()
-    symbol_base = CONFIG['symbol'].split('/')[0]  # Extract base currency (like ETH)
+    symbol_base = CONFIG['symbol'].split('/')[0]
 
     if exchange is None:
         logging.error("Exchange initialization failed")
@@ -364,10 +359,8 @@ def main(performance):
         latest_close_price = market_data['close'].iloc[-1]
         logging.info(f"Latest close price: {latest_close_price}")
 
-        # Logic for customized sell strategy
-        execute_trade_if_profitable(exchange, CONFIG['symbol'], latest_close_price, performance)
+        execute_trade_if_profitable(exchange, CONFIG['symbol'], latest_close_price, performance, trade_history)
 
-        # Calculate the amount to trade while considering fees for buy logic
         gross_amount_to_trade = (CONFIG['risk_percentage'] / 100) * usdt_balance / latest_close_price
         estimated_fee = gross_amount_to_trade * CONFIG['fee_rate']
         amount_to_trade = gross_amount_to_trade - estimated_fee
@@ -390,9 +383,9 @@ def main(performance):
             logging.warning("Formatted trade amount or notional value is below minimum thresholds")
             return
 
-        if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:  # Buy condition
+        if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:
             logging.info(f"Buy signal confirmed: EMA short {ema_short_last:.4f} over EMA long {ema_long_last:.4f}")
-            execute_trade(exchange, "buy", amount_to_trade_formatted, CONFIG['symbol'], performance)
+            execute_trade(exchange, "buy", amount_to_trade_formatted, CONFIG['symbol'], performance, trade_history)
 
     except Exception as e:
         error_message = f'Critical error in main loop: {str(e)}'
@@ -401,6 +394,7 @@ def main(performance):
 
 if __name__ == '__main__':
     performance = PerformanceMetrics()
+    trade_history = {}  # This should be a structure to store executed trades
     while True:
-        main(performance)
+        main(performance, trade_history)
         time.sleep(60)  # Execute the loop every minute
