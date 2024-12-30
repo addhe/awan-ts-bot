@@ -253,14 +253,20 @@ def main(performance):
 
         latest_close_price = market_data['close'].iloc[-1]
         logging.info(f"Latest close price: {latest_close_price}")
-        
-        amount_to_trade = (CONFIG['risk_percentage'] / 100) * usdt_balance / latest_close_price
-        logging.info(f"Calculated trade amount: {amount_to_trade} {symbol_base}")
+
+        # Calculate the amount to trade while considering fees
+        gross_amount_to_trade = (CONFIG['risk_percentage'] / 100) * usdt_balance / latest_close_price
+        estimated_fee = gross_amount_to_trade * CONFIG['fee_rate']
+        amount_to_trade = gross_amount_to_trade - estimated_fee  # Account for the fee in the trade size
+
+        logging.info(f"Calculated gross trade amount: {gross_amount_to_trade} {symbol_base}")
+        logging.info(f"Estimated fee: {estimated_fee} {symbol_base}")
+        logging.info(f"Amount to trade after fee: {amount_to_trade} {symbol_base}")
 
         min_trade_usd = 10.00  # Assuming a $10 minimum trade amount
-        min_trade_amount = min_trade_usd / latest_close_price  # Calculate BTC equivalent
+        min_trade_amount = min_trade_usd / latest_close_price  # Calculate symbol_base equivalent
         if amount_to_trade < min_trade_amount:
-            logging.warning(f"Trade amount {amount_to_trade} {symbol_base} is below minimum threshold {min_trade_amount} BTC")
+            logging.warning(f"Trade amount {amount_to_trade} {symbol_base} is below minimum threshold {min_trade_amount} {symbol_base}")
             return
 
         if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:
