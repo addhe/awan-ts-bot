@@ -1,5 +1,5 @@
 CONFIG = {
-    'use_testnet': True,
+    'use_testnet': False,
     'symbol': 'BTC/USDT',
     'max_positions': 3,
     'profit_target_percent': 0.01,  # 1.5%

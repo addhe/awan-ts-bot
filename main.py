@@ -18,8 +18,8 @@ logging.basicConfig(handlers=[log_handler], level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 # API Configuration
-API_KEY = os.environ.get('API_KEY_BINANCE')
-API_SECRET = os.environ.get('API_SECRET_BINANCE')
+API_KEY = os.environ.get('API_KEY_SPOT_BINANCE')
+API_SECRET = os.environ.get('API_SECRET_SPOT_BINANCE')
 
 if API_KEY is None or API_SECRET is None:
     error_message = 'API credentials not found in environment variables'
