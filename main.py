@@ -128,15 +128,18 @@ def get_min_trade_amount_and_notional(exchange, symbol):
         market = markets.get(symbol)
         if market:
             min_amount = market['limits']['amount']['min']
-            min_notional = market['info']['filters']
-            for f in min_notional:
+            min_notional_value = None
+            for f in market['info']['filters']:
                 if f['filterType'] == 'MIN_NOTIONAL':
                     min_notional_value = float(f['minNotional'])
-                    return min_amount, min_notional_value
-            return min_amount, None
+                    break
+            if min_notional_value is not None:
+                return min_amount, min_notional_value
+            else:
+                logging.error(f"MIN_NOTIONAL filter not found for symbol: {symbol}")
         else:
             logging.error(f"Market data not available for symbol: {symbol}")
-            return None, None
+        return None, None
     except Exception as e:
         logging.error(f"Failed to fetch market info: {str(e)}")
         return None, None
