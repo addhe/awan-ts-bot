@@ -265,17 +265,23 @@ def main(performance):
 
         min_trade_usd = 10.00  # Assuming a $10 minimum trade amount
         min_trade_amount = min_trade_usd / latest_close_price  # Calculate symbol_base equivalent
-        if amount_to_trade < min_trade_amount:
-            logging.warning(f"Trade amount {amount_to_trade} {symbol_base} is below minimum threshold {min_trade_amount} {symbol_base}")
+
+        # Add precision handling before executing the trade
+        decimals_allowed = 6  # Assume the allowed place for ETH/USDT; verify with Binance API
+        amount_to_trade_formatted = round(amount_to_trade, decimals_allowed)
+        logging.info(f"Formatted amount to trade: {amount_to_trade_formatted} {symbol_base}")
+
+        if amount_to_trade_formatted < min_trade_amount:
+            logging.warning(f"Formatted trade amount {amount_to_trade_formatted} {symbol_base} is below minimum threshold {min_trade_amount} {symbol_base}")
             return
 
         if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:
             logging.info("Buy signal detected")
-            execute_trade(exchange, "buy", amount_to_trade, CONFIG['symbol'])
+            execute_trade(exchange, "buy", amount_to_trade_formatted, CONFIG['symbol'])
 
         elif ema_short_prev > ema_long_prev and ema_short_last < ema_long_last:
             logging.info("Sell signal detected")
-            execute_trade(exchange, "sell", amount_to_trade, CONFIG['symbol'])
+            execute_trade(exchange, "sell", amount_to_trade_formatted, CONFIG['symbol'])
 
     except Exception as e:
         error_message = f'Critical error in main loop: {str(e)}'
