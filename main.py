@@ -9,7 +9,7 @@ import json
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 
-from config import CONFIG
+from config.config import CONFIG
 from src.modules.send_telegram_notification import send_telegram_notification
 
 # Initialize logging with a rotating file handler
