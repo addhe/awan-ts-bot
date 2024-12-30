@@ -23,7 +23,7 @@ API_SECRET = os.environ.get('API_SECRET_BINANCE')
 
 if API_KEY is None or API_SECRET is None:
     error_message = 'API credentials not found in environment variables'
-    logging.error('API credentials not found in environment variables')
+    logging.error(error_message)
     send_telegram_notification(error_message)
     exit(1)
 
@@ -145,7 +145,11 @@ def safe_api_call(func, *args, **kwargs):
         return func(*args, **kwargs)
     except ccxt.NetworkError as e:
         logging.warning(f"Network error: {str(e)}. Retrying...")
-        time.sleep(10)  # Wait before retrying
+        time.sleep(10)
+        return safe_api_call(func, *args, **kwargs)
+    except ccxt.RateLimitExceeded as e:
+        logging.error(f"Rate limit exceeded: {str(e)}. Waiting before retrying...")
+        time.sleep(60)
         return safe_api_call(func, *args, **kwargs)
     except ccxt.ExchangeError as e:
         logging.error(f"Exchange error: {str(e)}")
@@ -214,13 +218,21 @@ def main(performance):
 
         if not performance.can_trade():
             message = "Trading limits reached"
-            logging.info("Trading limits reached")
+            logging.info(message)
             send_telegram_notification(message)
             return
 
         balance = safe_api_call(exchange.fetch_balance)
-        if balance['USDT']['free'] < CONFIG['min_balance']:
-            error_message = f"Insufficient balance: {balance['USDT']['free']} USDT"
+        if balance is not None and 'USDT' in balance and 'free' in balance['USDT']:
+            usdt_balance = balance['USDT']['free']
+        else:
+            error_message = "Failed to retrieve balance"
+            logging.error(error_message)
+            send_telegram_notification(error_message)
+            return
+
+        if usdt_balance < CONFIG['min_balance']:
+            error_message = f"Insufficient balance: {usdt_balance} USDT"
             logging.error(error_message)
             send_telegram_notification(error_message)
             return
@@ -236,7 +248,12 @@ def main(performance):
         ema_short_last, ema_short_prev = market_data['ema_short'].iloc[-1], market_data['ema_short'].iloc[-2]
         ema_long_last, ema_long_prev = market_data['ema_long'].iloc[-1], market_data['ema_long'].iloc[-2]
 
-        amount_to_trade = CONFIG['risk_percentage'] * balance['USDT']['free'] / 100 / market_data['close'].iloc[-1]
+        amount_to_trade = CONFIG['risk_percentage'] * usdt_balance / 100 / market_data['close'].iloc[-1]
+
+        min_trade_amount = 0.001  # Adjust based on exchange minimum
+        if amount_to_trade < min_trade_amount:
+            logging.warning("Trade amount is below minimum threshold")
+            return
 
         if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:
             logging.info("Buy signal detected")
@@ -255,4 +272,4 @@ if __name__ == '__main__':
     performance = PerformanceMetrics()
     while True:
         main(performance)
-        time.sleep(60)
+        time.sleep(60)  # Execute the loop every minute
