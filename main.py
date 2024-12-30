@@ -241,12 +241,19 @@ def calculate_ema(df, period, column='close'):
     return df[column].ewm(span=period, adjust=False).mean()
 
 def execute_trade(exchange, side, amount, symbol, performance):
-
     try:
+        balance = safe_api_call(exchange.fetch_balance)
+        eth_balance = balance[symbol.split('/')[0]]['free']  # Get free ETH balance
+
+        if side == "sell" and eth_balance < amount:
+            logging.warning(f"Not enough {symbol.split('/')[0]} to sell. Available: {eth_balance}, Required: {amount}")
+            return
+
         if side == "buy":
             order = exchange.create_market_buy_order(symbol, amount)
         elif side == "sell":
             order = exchange.create_market_sell_order(symbol, amount)
+
         logging.info(f"Executed {side} order: {order}")
         send_telegram_notification(f"Executed {side} order: {order}")
 
@@ -274,6 +281,47 @@ def get_min_trade_amount(exchange, symbol):
         logging.error(f"Failed to fetch market info: {str(e)}")
         return None
 
+def analyze_historical_data(exchange, symbol, timeframe='1h', limit=100):
+    """Fetch historical market data and return a DataFrame."""
+    try:
+        candles = safe_api_call(exchange.fetch_ohlcv, symbol, timeframe, limit=limit)
+        if candles is None:
+            logging.error(f"Failed to fetch historical data for {symbol}")
+            return None
+
+        df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    except Exception as e:
+        logging.error(f"Exception in fetching historical data: {str(e)}")
+        return None
+
+def check_profitability(historical_data, current_price, profit_target_percent):
+    """Determine if selling based on current price provides desired profit."""
+    if historical_data is None or historical_data.empty:
+        logging.error("Historical data is empty or None")
+        return False
+
+    # Get the average price of the last N candles (as a simple strategy)
+    average_price = historical_data['close'].mean()
+    target_price = average_price * (1 + profit_target_percent / 100)
+
+    logging.info(f"Current price: {current_price}, Target price for selling: {target_price}")
+
+    return current_price >= target_price
+
+def execute_trade_if_profitable(exchange, symbol, current_price, performance):
+    """Evaluate conditions and execute a sell trade if profitable."""
+    eth_balance = safe_api_call(exchange.fetch_balance)[symbol.split('/')[0]]['free']
+    if eth_balance <= 0:
+        logging.warning(f"No {symbol.split('/')[0]} to sell.")
+        return
+
+    historical_data = analyze_historical_data(exchange, symbol)
+    if check_profitability(historical_data, current_price, CONFIG['profit_target_percent']):
+        logging.info(f"Profit target met. Preparing to sell {eth_balance} {symbol.split('/')[0]}")
+        execute_trade(exchange, "sell", eth_balance, symbol, performance)
+
 def main(performance):
     exchange = initialize_exchange()
     symbol_base = CONFIG['symbol'].split('/')[0]  # Extract base currency (like ETH)
@@ -294,14 +342,7 @@ def main(performance):
             return
 
         balance = safe_api_call(exchange.fetch_balance)
-        if balance is not None and 'USDT' in balance and 'free' in balance['USDT']:
-            usdt_balance = balance['USDT']['free']
-            logging.info(f"Available USDT balance: {usdt_balance}")
-        else:
-            error_message = "Failed to retrieve balance"
-            logging.error(error_message)
-            send_telegram_notification(error_message)
-            return
+        usdt_balance = balance['USDT']['free']
 
         if usdt_balance < CONFIG['min_balance']:
             error_message = f"Insufficient balance: {usdt_balance} USDT"
@@ -323,51 +364,40 @@ def main(performance):
         latest_close_price = market_data['close'].iloc[-1]
         logging.info(f"Latest close price: {latest_close_price}")
 
-        # Calculate the amount to trade while considering fees
+        # Logic for customized sell strategy
+        execute_trade_if_profitable(exchange, CONFIG['symbol'], latest_close_price, performance)
+
+        # Calculate the amount to trade while considering fees for buy logic
         gross_amount_to_trade = (CONFIG['risk_percentage'] / 100) * usdt_balance / latest_close_price
         estimated_fee = gross_amount_to_trade * CONFIG['fee_rate']
-        amount_to_trade = gross_amount_to_trade - estimated_fee  # Account for the fee in the trade size
+        amount_to_trade = gross_amount_to_trade - estimated_fee
 
         logging.info(f"Calculated gross trade amount: {gross_amount_to_trade} {symbol_base}")
         logging.info(f"Estimated fee: {estimated_fee} {symbol_base}")
         logging.info(f"Amount to trade after fee: {amount_to_trade} {symbol_base}")
 
-        # Get dynamic minimum trade amount and notional
         min_trade_amount, min_notional = get_min_trade_amount_and_notional(exchange, CONFIG['symbol'])
-
         if min_trade_amount is None or min_notional is None:
             logging.warning("Unable to fetch dynamic minimum requirements; skipping trade execution.")
             return
 
-        # Add precision handling before executing the trade
-        decimals_allowed = 4  # Assume the allowed place for ETH/USDT; verify with Binance API
+        decimals_allowed = 4
         amount_to_trade_formatted = round(amount_to_trade, decimals_allowed)
         logging.info(f"Formatted amount to trade: {amount_to_trade_formatted} {symbol_base}")
 
-        # Calculate the notional value to verify against the minimum
         notional_value = amount_to_trade_formatted * latest_close_price
-
-        if amount_to_trade_formatted < min_trade_amount:
-            logging.warning(f"Formatted trade amount {amount_to_trade_formatted} {symbol_base} is below minimum threshold {min_trade_amount} {symbol_base}")
+        if amount_to_trade_formatted < min_trade_amount or notional_value < min_notional:
+            logging.warning("Formatted trade amount or notional value is below minimum thresholds")
             return
 
-        if notional_value < min_notional:
-            logging.warning(f"Trade notional value {notional_value} USDT is below minimum notional threshold {min_notional} USDT")
-            return
-
-        if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:
+        if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:  # Buy condition
             logging.info(f"Buy signal confirmed: EMA short {ema_short_last:.4f} over EMA long {ema_long_last:.4f}")
             execute_trade(exchange, "buy", amount_to_trade_formatted, CONFIG['symbol'], performance)
-
-        elif ema_short_prev > ema_long_prev and ema_short_last < ema_long_last:
-            logging.info(f"Sell signal confirmed: EMA short {ema_short_last:.4f} under EMA long {ema_long_last:.4f}")
-            execute_trade(exchange, "sell", amount_to_trade_formatted, CONFIG['symbol'], performance)
 
     except Exception as e:
         error_message = f'Critical error in main loop: {str(e)}'
         logging.error(error_message)
         send_telegram_notification(error_message)
-
 
 if __name__ == '__main__':
     performance = PerformanceMetrics()

@@ -13,7 +13,7 @@ CONFIG = {
     'timeframe': '5m',
     'ema_short_period': 5,
     'ema_long_period': 15,
-    'risk_percentage': 20.0,
+    'risk_percentage': 25.0,
     'leverage': 2,
     'min_balance': 10,
     'funding_rate_threshold': 0.0030,
