@@ -121,6 +121,26 @@ class PerformanceMetrics:
 
         return True
 
+def get_min_trade_amount_and_notional(exchange, symbol):
+    """Fetch minimum trade amount and notional value for a specific symbol."""
+    try:
+        markets = safe_api_call(exchange.load_markets)
+        market = markets.get(symbol)
+        if market:
+            min_amount = market['limits']['amount']['min']
+            min_notional = market['info']['filters']
+            for f in min_notional:
+                if f['filterType'] == 'MIN_NOTIONAL':
+                    min_notional_value = float(f['minNotional'])
+                    return min_amount, min_notional_value
+            return min_amount, None
+        else:
+            logging.error(f"Market data not available for symbol: {symbol}")
+            return None, None
+    except Exception as e:
+        logging.error(f"Failed to fetch market info: {str(e)}")
+        return None, None
+
 def initialize_exchange():
     try:
         exchange = ccxt.binance({
@@ -298,11 +318,11 @@ def main(performance):
         logging.info(f"Estimated fee: {estimated_fee} {symbol_base}")
         logging.info(f"Amount to trade after fee: {amount_to_trade} {symbol_base}")
 
-        # Get dynamic minimum trade amount
-        min_trade_amount = get_min_trade_amount(exchange, CONFIG['symbol'])
+        # Get dynamic minimum trade amount and notional
+        min_trade_amount, min_notional = get_min_trade_amount_and_notional(exchange, CONFIG['symbol'])
 
-        if min_trade_amount is None:
-            logging.warning("Unable to fetch dynamic minimum trade amount; skipping trade execution.")
+        if min_trade_amount is None or min_notional is None:
+            logging.warning("Unable to fetch dynamic minimum requirements; skipping trade execution.")
             return
 
         # Add precision handling before executing the trade
@@ -310,8 +330,15 @@ def main(performance):
         amount_to_trade_formatted = round(amount_to_trade, decimals_allowed)
         logging.info(f"Formatted amount to trade: {amount_to_trade_formatted} {symbol_base}")
 
+        # Calculate the notional value to verify against the minimum
+        notional_value = amount_to_trade_formatted * latest_close_price
+
         if amount_to_trade_formatted < min_trade_amount:
             logging.warning(f"Formatted trade amount {amount_to_trade_formatted} {symbol_base} is below minimum threshold {min_trade_amount} {symbol_base}")
+            return
+
+        if notional_value < min_notional:
+            logging.warning(f"Trade notional value {notional_value} USDT is below minimum notional threshold {min_notional} USDT")
             return
 
         if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:
@@ -322,11 +349,11 @@ def main(performance):
             logging.info(f"Sell signal confirmed: EMA short {ema_short_last:.4f} under EMA long {ema_long_last:.4f}")
             execute_trade(exchange, "sell", amount_to_trade_formatted, CONFIG['symbol'], performance)
 
-
     except Exception as e:
         error_message = f'Critical error in main loop: {str(e)}'
         logging.error(error_message)
         send_telegram_notification(error_message)
+
 
 if __name__ == '__main__':
     performance = PerformanceMetrics()
