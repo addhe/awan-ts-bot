@@ -20,3 +20,4 @@ while true; do
   # Add a sleep to wait for a few seconds before restart, this avoids immediate restart on failure.
   echo "$(date): Restarting trading bot after failure" >> $LOG_FILE
   sleep 10
+done
