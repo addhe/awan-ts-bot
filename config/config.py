@@ -1,6 +1,6 @@
 CONFIG = {
-    'use_testnet': True,
-    'symbol': 'BTC/USDT',
+    'use_testnet': False,
+    'symbol': 'ETH/USDT',
     'max_positions': 3,
     'profit_target_percent': 0.01,
     'fee_rate': 0.0004,
@@ -13,7 +13,7 @@ CONFIG = {
     'timeframe': '5m',
     'ema_short_period': 5,
     'ema_long_period': 15,
-    'risk_percentage': 1.0,
+    'risk_percentage': 5.0,
     'leverage': 2,
     'min_balance': 10,
     'funding_rate_threshold': 0.0030,
