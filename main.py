@@ -206,7 +206,8 @@ def validate_config():
 def calculate_ema(df, period, column='close'):
     return df[column].ewm(span=period, adjust=False).mean()
 
-def execute_trade(exchange, side, amount, symbol):
+def execute_trade(exchange, side, amount, symbol, performance):
+
     try:
         if side == "buy":
             order = exchange.create_market_buy_order(symbol, amount)
@@ -214,6 +215,12 @@ def execute_trade(exchange, side, amount, symbol):
             order = exchange.create_market_sell_order(symbol, amount)
         logging.info(f"Executed {side} order: {order}")
         send_telegram_notification(f"Executed {side} order: {order}")
+
+        # Determine profit/loss and trade success
+        profit = calculate_profit(order)
+        won = profit > 0
+        performance.update_trade(profit, won)
+
     except Exception as e:
         logging.error(f"Failed to execute {side} order: {str(e)}")
         send_telegram_notification(f"Failed to execute {side} order: {str(e)}")
@@ -309,11 +316,12 @@ def main(performance):
 
         if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:
             logging.info(f"Buy signal confirmed: EMA short {ema_short_last:.4f} over EMA long {ema_long_last:.4f}")
-            execute_trade(exchange, "buy", amount_to_trade_formatted, CONFIG['symbol'])
+            execute_trade(exchange, "buy", amount_to_trade_formatted, CONFIG['symbol'], performance)
 
         elif ema_short_prev > ema_long_prev and ema_short_last < ema_long_last:
             logging.info(f"Sell signal confirmed: EMA short {ema_short_last:.4f} under EMA long {ema_long_last:.4f}")
-            execute_trade(exchange, "sell", amount_to_trade_formatted, CONFIG['symbol'])
+            execute_trade(exchange, "sell", amount_to_trade_formatted, CONFIG['symbol'], performance)
+
 
     except Exception as e:
         error_message = f'Critical error in main loop: {str(e)}'
