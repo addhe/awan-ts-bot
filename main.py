@@ -14,7 +14,7 @@ from src.modules.send_telegram_notification import send_telegram_notification
 
 # Initialize logging with a rotating file handler
 log_handler = RotatingFileHandler('trade_log_spot.log', maxBytes=5*1024*1024, backupCount=2)
-logging.basicConfig(handlers=[log_handler], level=logging.DEBUG,
+logging.basicConfig(handlers=[log_handler], level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 # API Configuration
@@ -141,14 +141,14 @@ def get_min_trade_amount_and_notional(exchange, symbol):
 
         if 'info' in market and 'filters' in market['info']:
             for f in market['info']['filters']:
-                if f['filterType'] == 'MIN_NOTIONAL':
+                if f['filterType'] == 'NOTIONAL':
                     min_notional_value = float(f['minNotional'])
                     break
 
         if min_amount is None:
             logging.error(f"Minimum amount not found for symbol: {symbol}")
         if min_notional_value is None:
-            logging.error(f"MIN_NOTIONAL filter not found for symbol: {symbol}")
+            logging.error(f"NOTIONAL filter not found for symbol: {symbol}")
 
         return min_amount, min_notional_value
     except Exception as e:
