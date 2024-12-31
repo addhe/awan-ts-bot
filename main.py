@@ -1405,77 +1405,145 @@ Take Profit: {position['take_profit']} USDT
             return None
 
     def execute_trade(self, side, amount, symbol):
-        """Execute trade with enhanced error handling and order tracking"""
+        """
+        Execute spot trade with enhanced tracking and notifications
+        """
         try:
-            # Add exchange connection check
+            # Pre-trade validations
             if not self.check_exchange_connection():
-                logging.error("Exchange connection check failed before trade execution")
+                logging.error("Exchange connection check failed")
                 return None
 
-            start_time = time.time()
-
-            # Validate market conditions first
-            if not self.validate_market_conditions(self.market_data):
-                logging.warning(f"Market conditions not met for {symbol}, skipping trade")
+            # Get current balance before trade
+            balance_before = safe_api_call(self.exchange.fetch_balance)
+            if balance_before is None:
+                logging.error("Failed to fetch pre-trade balance")
                 return None
 
-            # Get current balance
-            balance = safe_api_call(self.exchange.fetch_balance)
             base_currency = symbol.split('/')[0]
-            base_balance = balance[base_currency]['free']
+            quote_currency = symbol.split('/')[1]
 
             # Validate balance for sell orders
-            if side == "sell" and base_balance < amount:
-                logging.warning(f"Insufficient balance for selling {base_currency}. Available: {base_balance}, Required: {amount}")
-                return None
-
-            # Execute order with timeout check
-            while time.time() - start_time < CONFIG['order_timeout']:
-                try:
-                    # Place the order
-                    if side == "buy":
-                        order = self.exchange.create_market_buy_order(symbol, amount)
-                    else:
-                        order = self.exchange.create_market_sell_order(symbol, amount)
-
-                    # Check if order is filled
-                    if order['status'] == 'closed':
-                        # Update trade history
-                        order_info = {
-                            'timestamp': datetime.now().isoformat(),
-                            'symbol': symbol,
-                            'side': side,
-                            'amount': amount,
-                            'price': float(order['price']),
-                            'order_id': order['id']
-                        }
-
-                        if symbol not in self.trade_history:
-                            self.trade_history[symbol] = []
-                        self.trade_history[symbol].append(order_info)
-
-                        # Log and notify
-                        logging.info(f"Executed {side} order: {order}")
-                        self.send_notification(
-                            f"Executed {side} order:\n"
-                            f"Symbol: {symbol}\n"
-                            f"Amount: {amount}\n"
-                            f"Price: {order['price']}"
-                        )
-
-                        return order
-
-                    time.sleep(1)  # Wait before checking again
-
-                except Exception as e:
-                    logging.error(f"Order execution error: {str(e)}")
+            if side == "sell":
+                available_amount = balance_before[base_currency]['free']
+                if available_amount < amount:
+                    logging.warning(f"Insufficient {base_currency} balance. Available: {available_amount}, Required: {amount}")
                     return None
 
-            logging.error(f"Order timeout after {CONFIG['order_timeout']} seconds")
-            return None
+            # Get current price for logging
+            ticker = safe_api_call(self.exchange.fetch_ticker, symbol)
+            if ticker is None:
+                logging.error("Failed to fetch current price")
+                return None
+
+            current_price = ticker['last']
+
+            try:
+                # Execute the trade
+                if side == "buy":
+                    order = safe_api_call(
+                        self.exchange.create_market_buy_order,
+                        symbol,
+                        amount,
+                        {'newOrderRespType': 'FULL'}  # Get full order response
+                    )
+                else:
+                    order = safe_api_call(
+                        self.exchange.create_market_sell_order,
+                        symbol,
+                        amount,
+                        {'newOrderRespType': 'FULL'}  # Get full order response
+                    )
+
+                if order is None or order.get('status') != 'closed':
+                    logging.error("Order execution failed or incomplete")
+                    return None
+
+                # Calculate actual executed amount and price
+                executed_amount = float(order['filled'])
+                executed_price = float(order['price'])
+                executed_value = executed_amount * executed_price
+
+                # Get post-trade balance
+                balance_after = safe_api_call(self.exchange.fetch_balance)
+                if balance_after is None:
+                    logging.warning("Failed to fetch post-trade balance")
+
+                # Track the position
+                position_info = self.track_position(order, side)
+
+                # Calculate and log slippage
+                slippage = abs(executed_price - current_price) / current_price
+                logging.info(f"Trade slippage: {slippage:.4%}")
+
+                # Prepare trade notification
+                if side == "buy":
+                    notification = f"""
+    🟢 Buy Order Executed:
+    Symbol: {symbol}
+    Amount: {executed_amount:.6f} {base_currency}
+    Price: {executed_price:.2f} {quote_currency}
+    Total Value: {executed_value:.2f} {quote_currency}
+    Slippage: {slippage:.4%}
+
+    Take Profit: {position_info['take_profit']:.2f}
+    Stop Loss: {position_info['stop_loss']:.2f}
+
+    Balance {quote_currency}: {balance_after[quote_currency]['free'] if balance_after else 'Unknown'}
+    Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                    """
+                else:
+                    profit = None
+                    if position_info and 'profit' in position_info:
+                        profit = position_info['profit']
+
+                    notification = f"""
+    🔴 Sell Order Executed:
+    Symbol: {symbol}
+    Amount: {executed_amount:.6f} {base_currency}
+    Price: {executed_price:.2f} {quote_currency}
+    Total Value: {executed_value:.2f} {quote_currency}
+    Profit: {profit:.2f} {quote_currency} if profit else 'N/A'}
+    Slippage: {slippage:.4%}
+
+    Balance {base_currency}: {balance_after[base_currency]['free'] if balance_after else 'Unknown'}
+    Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                    """
+
+                # Send notification
+                self.send_notification(notification)
+
+                # Update trade history
+                trade_info = {
+                    'timestamp': datetime.now().isoformat(),
+                    'symbol': symbol,
+                    'side': side,
+                    'amount': executed_amount,
+                    'price': executed_price,
+                    'value': executed_value,
+                    'order_id': order['id'],
+                    'slippage': slippage
+                }
+
+                if side == "sell" and profit is not None:
+                    trade_info['profit'] = profit
+
+                if symbol not in self.trade_history:
+                    self.trade_history[symbol] = []
+                self.trade_history[symbol].append(trade_info)
+
+                # If it's a buy order, set up take profit and stop loss
+                if side == "buy":
+                    self.implement_risk_management(symbol, executed_price, executed_amount, order)
+
+                return order
+
+            except Exception as e:
+                logging.error(f"Error executing {side} order: {str(e)}")
+                self.send_notification(f"⚠️ Error executing {side} order: {str(e)}")
+                return None
 
         except Exception as e:
-            self.handle_trade_error(e)
             logging.error(f"Error in execute_trade: {str(e)}")
             return None
 
