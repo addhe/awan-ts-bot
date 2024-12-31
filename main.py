@@ -49,6 +49,73 @@ class TradeExecution:
         self.trade_history = trade_history
         self.market_data = None
 
+    def get_account_value(self):
+        """Get total account value in USDT"""
+        try:
+            balance = safe_api_call(self.exchange.fetch_balance)
+            if balance is None:
+                return 0
+
+            total_value = 0
+            for currency in ['ETH', 'USDT']:
+                if currency in balance:
+                    if currency == 'USDT':
+                        total_value += balance[currency]['total']
+                    else:
+                        # Get current price for the asset
+                        ticker = safe_api_call(self.exchange.fetch_ticker, f'{currency}/USDT')
+                        if ticker:
+                            total_value += balance[currency]['total'] * ticker['last']
+
+            return total_value
+
+        except Exception as e:
+            logging.error(f"Error getting account value: {str(e)}")
+            return 0
+
+    def validate_position_parameters(self, position_size, current_price, market_data):
+        """Validate position parameters against multiple criteria"""
+        try:
+            # Calculate notional value
+            notional_value = position_size * current_price
+
+            # Volume-based validation
+            avg_volume = market_data['volume'].rolling(
+                window=CONFIG['volume_ma_length']
+            ).mean().iloc[-1]
+            volume_ratio = notional_value / (avg_volume * current_price)
+
+            if volume_ratio > CONFIG['volume_impact_threshold']:
+                logging.warning(f"Position size too large relative to volume: {volume_ratio:.2%}")
+                return False
+
+            # Risk-based validation
+            account_value = self.get_account_value()
+            position_risk = (notional_value * CONFIG['stop_loss_percent']) / account_value
+
+            if position_risk > CONFIG['max_single_trade_risk']:
+                logging.warning(f"Position risk too high: {position_risk:.2%}")
+                return False
+
+            # Trend-based validation
+            trend_strength = self.calculate_trend_strength(market_data)
+            if trend_strength < CONFIG['trend_strength_threshold']:
+                logging.warning(f"Trend strength too weak: {trend_strength:.4f}")
+                return False
+
+            logging.info(f"""
+            Position Validation:
+            Volume Ratio: {volume_ratio:.2%}
+            Position Risk: {position_risk:.2%}
+            Trend Strength: {trend_strength:.4f}
+            """)
+
+            return True
+
+        except Exception as e:
+            logging.error(f"Error validating position parameters: {str(e)}")
+            return False
+
     def log_market_summary(self, market_data):
         """Log detailed market summary"""
         try:
@@ -483,6 +550,15 @@ class TradeExecution:
             logging.info(f"Current Price: {current_price:.2f} USDT")
             logging.info(f"24h Volume: {current_volume:.2f} USDT")
 
+            # Add RSI-based entry condition
+            trend_analysis = self.analyze_price_trend(market_data)
+            rsi = trend_analysis['rsi']
+
+            # Buy condition when RSI is oversold
+            if rsi < CONFIG['rsi_oversold']:
+                logging.info(f"✅ RSI oversold condition met: {rsi:.2f}")
+                return True
+
             # 1. Spread Check
             if not self.check_spread(market_data):
                 conditions_report["spread"] = False
@@ -549,44 +625,50 @@ class TradeExecution:
             return False
 
     def calculate_trend_strength(self, market_data):
-        """Calculate trend strength using multiple indicators"""
         try:
-            # EMA trend strength
+            # Get base EMAs
             ema_short = self.calculate_ema(market_data, CONFIG['ema_short_period'])
             ema_long = self.calculate_ema(market_data, CONFIG['ema_long_period'])
 
-            # Calculate basic trend strength from EMAs
-            basic_trend_strength = abs(ema_short.iloc[-1] - ema_long.iloc[-1]) / ema_long.iloc[-1]
+            # Calculate directional movement
+            price_change = market_data['close'].pct_change(CONFIG['trend_lookback'])
+            direction = np.sign(price_change.mean())
 
-            # Add momentum component
-            price_momentum = market_data['close'].pct_change(5).mean()  # 5-period momentum
-
-            # Add RSI directional component
-            rsi = self.analyze_price_trend(market_data)['rsi']
-            rsi_factor = abs(50 - rsi) / 50  # How far RSI is from neutral (50)
+            # Calculate price momentum
+            momentum = market_data['close'].pct_change(5).mean()
 
             # Calculate volume trend
             volume_sma = market_data['volume'].rolling(window=10).mean()
             volume_trend = (market_data['volume'].iloc[-1] / volume_sma.iloc[-1]) - 1
 
-            # Combine all components
-            combined_strength = (
-                basic_trend_strength * 0.4 +  # 40% weight to EMA trend
-                abs(price_momentum) * 0.3 +   # 30% weight to momentum
-                rsi_factor * 0.2 +            # 20% weight to RSI
-                abs(volume_trend) * 0.1       # 10% weight to volume trend
+            # Enhanced trend strength calculation
+            basic_trend_strength = abs(ema_short.iloc[-1] - ema_long.iloc[-1]) / ema_long.iloc[-1]
+
+            # Weight the components
+            weighted_strength = (
+                basic_trend_strength * 0.35 +  # Base trend
+                abs(momentum) * 0.25 +         # Momentum
+                abs(volume_trend) * 0.20 +     # Volume trend
+                direction * 0.20               # Direction
             )
 
+            # Apply volatility adjustment
+            volatility = self.calculate_volatility()
+            if volatility:
+                volatility_factor = 1 - (volatility / CONFIG['max_volatility_threshold'])
+                weighted_strength *= max(0.5, volatility_factor)  # Cap minimum at 0.5
+
             logging.debug(f"""
-            Trend Strength Components:
-            Basic Trend: {basic_trend_strength:.6f}
-            Momentum: {price_momentum:.6f}
-            RSI Factor: {rsi_factor:.6f}
-            Volume Trend: {volume_trend:.6f}
-            Combined: {combined_strength:.6f}
+            Trend Components:
+            Basic: {basic_trend_strength:.6f}
+            Momentum: {momentum:.6f}
+            Volume: {volume_trend:.6f}
+            Direction: {direction}
+            Volatility Adj: {volatility_factor if volatility else 'N/A'}
+            Final: {weighted_strength:.6f}
             """)
 
-            return combined_strength
+            return weighted_strength
 
         except Exception as e:
             logging.error(f"Error calculating trend strength: {str(e)}")
@@ -696,21 +778,26 @@ class TradeExecution:
             if len(open_orders) >= CONFIG['max_open_orders']:
                 logging.warning("Maximum open orders reached")
                 return False
-
+    
             # Check daily profit target
             if self.check_daily_profit_target():
                 logging.info("Daily profit target reached, skipping trade")
                 return False
-
+    
+            # Add position parameters validation here
+            if not self.validate_position_parameters(amount, current_price, self.market_data):
+                logging.warning("Position parameters validation failed")
+                return False
+    
             # Pre-trade validation
             if not self.validate_trading_conditions(self.market_data):
                 return False
-
+    
             # Execute trade
             order = self.execute_trade(side, amount, symbol)
             if order is None:
                 return False
-
+    
             # Post-trade actions
             self.implement_risk_management(
                 symbol=symbol,
@@ -718,12 +805,12 @@ class TradeExecution:
                 position_size=amount,
                 order=order
             )
-
+    
             # Monitor performance after trade
             self.monitor_performance()
-
+    
             return True
-
+    
         except Exception as e:
             logging.error(f"Error executing trade with safety: {str(e)}")
             return False
@@ -778,39 +865,48 @@ class TradeExecution:
             return None
 
     def calculate_position_size(self, balance, current_price, market_data):
-        """Calculate and validate position size"""
         try:
-            # Calculate optimal position
-            optimal_position = self.calculate_optimal_position_size(balance, current_price)
-            if optimal_position is None:
-                return None
+            # Base position size calculation
+            risk_amount = balance * (CONFIG['risk_percentage'] / 100)
+            base_position = risk_amount / current_price
 
-            # Apply fees
-            estimated_fee = optimal_position * CONFIG['fee_rate']
-            amount_to_trade = optimal_position - estimated_fee
+            # Apply volatility-based adjustment
+            volatility = self.calculate_volatility()
+            if volatility:
+                vol_adjustment = 1 - (volatility / CONFIG['max_volatility_threshold'])
+                base_position *= max(0.5, vol_adjustment)
 
-            # Get minimum trade requirements
-            min_trade_amount, min_notional = get_min_trade_amount_and_notional(
-                self.exchange,
-                CONFIG['symbol']
-            )
+            # Apply trend strength adjustment
+            trend_strength = self.calculate_trend_strength(market_data)
+            trend_adjustment = min(1.2, max(0.8, trend_strength / CONFIG['trend_strength_threshold']))
+            base_position *= trend_adjustment
 
-            # Format and validate final amount
-            amount_to_trade_formatted = adjust_trade_amount(
-                amount_to_trade,
-                current_price,
-                min_trade_amount,
-                min_notional
-            )
+            # Apply market impact adjustment
+            avg_volume = market_data['volume'].rolling(window=20).mean().iloc[-1]
+            market_impact = (base_position * current_price) / (avg_volume * current_price)
+            if market_impact > CONFIG['market_impact_threshold']:
+                impact_reduction = CONFIG['market_impact_threshold'] / market_impact
+                base_position *= impact_reduction
 
-            if amount_to_trade_formatted is None:
-                return None
+            # Apply limits
+            max_position = balance * CONFIG['max_position_size'] / current_price
+            min_position = CONFIG['min_position_size']
+            final_position = min(max_position, max(min_position, base_position))
 
-            # Validate position size
-            if not self.validate_position_size(amount_to_trade_formatted, current_price):
-                return None
+            # Ensure minimum notional value
+            if final_position * current_price < CONFIG['min_notional_value']:
+                final_position = CONFIG['min_notional_value'] / current_price
 
-            return optimal_position, amount_to_trade_formatted
+            logging.info(f"""
+            Position Sizing Details:
+            Base Position: {base_position:.6f}
+            Volatility Adjustment: {vol_adjustment if volatility else 'N/A'}
+            Trend Adjustment: {trend_adjustment:.2f}
+            Market Impact: {market_impact:.4%}
+            Final Position: {final_position:.6f}
+            """)
+
+            return final_position
 
         except Exception as e:
             logging.error(f"Error calculating position size: {str(e)}")
@@ -843,15 +939,17 @@ class TradeExecution:
 
     def check_market_health(self):
         try:
-            # Check 24h volume
             ticker = safe_api_call(self.exchange.fetch_ticker, CONFIG['symbol'])
-            if ticker['quoteVolume'] < CONFIG['min_volume_usdt'] * 24:
-                logging.warning("24h volume too low")
-                return False
+            volume_24h = ticker['quoteVolume']
 
-            # Check if market is trending or ranging
-            atr = self.calculate_atr(self.market_data, CONFIG['atr_period'])
-            if atr is None or atr == float('inf'):
+            # Enhanced volume check
+            avg_volume = self.market_data['volume'].mean() * self.market_data['close'].mean()
+            volume_ratio = volume_24h / (avg_volume * 24)
+
+            logging.info(f"Volume ratio: {volume_ratio:.2f}")
+
+            if volume_ratio < 0.8:  # Volume should be at least 80% of average
+                logging.warning("Volume below average")
                 return False
 
             return True
