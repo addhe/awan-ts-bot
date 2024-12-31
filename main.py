@@ -784,17 +784,23 @@ class TradeExecution:
     def validate_position_size(self, amount, price):
         try:
             notional_value = amount * price
-            min_notional = CONFIG.get('min_notional_value', 10)  # Add to config
-            max_notional = CONFIG.get('max_notional_value', 1000)  # Add to config
+            min_notional = CONFIG.get('min_notional_value', 11)  # Add to config
+            max_notional = CONFIG.get('max_notional_value', 1000.0)  # Add to config
+            min_amount = CONFIG.get('min_trade_amount', 0.004)
+
+            if amount < min_amount:
+                logging.warning(f"Position size too small: {amount} ETH (minimum: {min_amount} ETH)")
+                return False
 
             if notional_value < min_notional:
-                logging.warning(f"Position size too small: {notional_value} USDT")
+                logging.warning(f"Order value too small: {notional_value:.2f} USDT (minimum: {min_notional} USDT)")
                 return False
 
             if notional_value > max_notional:
-                logging.warning(f"Position size too large: {notional_value} USDT")
+                logging.warning(f"Order value too large: {notional_value:.2f} USDT (maximum: {max_notional} USDT)")
                 return False
 
+            logging.info(f"Position size validated - Amount: {amount} ETH, Value: {notional_value:.2f} USDT")
             return True
         except Exception as e:
             logging.error(f"Error validating position size: {str(e)}")
@@ -852,6 +858,10 @@ class TradeExecution:
             max_risk_amount = balance * (CONFIG['risk_percentage'] / 100)
             position_size = max_risk_amount / current_price
 
+            # Ensure minimum position size
+            min_position = CONFIG.get('min_position_size', 0.004)
+            position_size = max(position_size, min_position)
+
             # Apply volatility adjustment
             adjusted_position = self.manage_position_size(position_size)
 
@@ -859,10 +869,16 @@ class TradeExecution:
             max_position = balance * CONFIG['max_position_size'] / current_price
             final_position = min(adjusted_position, max_position)
 
+            # Ensure minimum notional value
+            min_notional = CONFIG.get('min_notional_value', 11.0)
+            if final_position * current_price < min_notional:
+                final_position = min_notional / current_price
+
             logging.info(f"Calculated position sizes:")
             logging.info(f"Base position: {position_size:.4f}")
             logging.info(f"Volatility adjusted: {adjusted_position:.4f}")
             logging.info(f"Final position: {final_position:.4f}")
+            logging.info(f"Estimated value: {final_position * current_price:.2f} USDT")
 
             return final_position
         except Exception as e:

@@ -2,7 +2,13 @@ CONFIG = {
     'use_testnet': False,
     'symbol': 'ETH/USDT',
     'timeframe': '1m',
-    'risk_percentage': 0.5,
+    'risk_percentage': 2.0,
+    'min_position_size': 0.004,
+    'max_position_size': 0.2,
+
+    'min_notional_value': 11.0,
+    'max_notional_value': 1000.0,
+
     'min_balance': 10.0,
     'max_daily_trades': 48,
     'max_daily_loss_percent': 3.0,
@@ -56,6 +62,7 @@ CONFIG = {
     'daily_profit_target': 2.0,
     'min_trade_interval': 180,
     'max_position_loss_percent': 2.0,
+    'initial_position_size': 0.005,
     'order_timeout': 30,
     'max_open_orders': 5,
     'max_consecutive_losses': 3,
@@ -65,6 +72,9 @@ CONFIG = {
     'amount_precision': 8,
 
     'funding_rate_threshold': 0.01,
-    'position_sizing_atr_multiplier': 1.5,
+    'position_sizing_atr_multiplier': 2.0,
     'price_change_threshold': 0.02,
+
+    'min_trade_amount': 0.004,
+    'min_order_value': 11.0,
 }
