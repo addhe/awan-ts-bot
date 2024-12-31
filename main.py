@@ -799,26 +799,26 @@ class TradeExecution:
             if len(open_orders) >= CONFIG['max_open_orders']:
                 logging.warning("Maximum open orders reached")
                 return False
-    
+
             # Check daily profit target
             if self.check_daily_profit_target():
                 logging.info("Daily profit target reached, skipping trade")
                 return False
-    
+
             # Add position parameters validation here
             if not self.validate_position_parameters(amount, current_price, self.market_data):
                 logging.warning("Position parameters validation failed")
                 return False
-    
+
             # Pre-trade validation
             if not self.validate_trading_conditions(self.market_data):
                 return False
-    
+
             # Execute trade
             order = self.execute_trade(side, amount, symbol)
             if order is None:
                 return False
-    
+
             # Post-trade actions
             self.implement_risk_management(
                 symbol=symbol,
@@ -826,12 +826,12 @@ class TradeExecution:
                 position_size=amount,
                 order=order
             )
-    
+
             # Monitor performance after trade
             self.monitor_performance()
-    
+
             return True
-    
+
         except Exception as e:
             self.handle_trade_error(e)
             logging.error(f"Error executing trade with safety: {str(e)}")
@@ -1290,157 +1290,103 @@ class TradeExecution:
             logging.warning(f"No {symbol.split('/')[0]} to sell.")
             return
 
-        historical_data = self.analyze_historical_data(symbol)
-        if self.check_profitability(historical_data, current_price):
-            logging.info(f"Profit target met. Preparing to sell {eth_balance} {symbol.split('/')[0]}")
-            self.execute_trade("sell", eth_balance, symbol)
+            historical_data = self.analyze_historical_data(symbol)
+            if self.check_profitability(historical_data, current_price):
+                logging.info(f"Profit target met. Preparing to sell {eth_balance} {symbol.split('/')[0]}")
+                self.execute_trade("sell", eth_balance, symbol)
 
     def process_trade_signals(self, market_data, symbol, amount_to_trade_formatted):
-        """Process trading signals with enhanced trend analysis"""
+        """Process trading signals for spot trading"""
         try:
-            # Validate inputs
             if market_data is None or market_data.empty:
                 logging.warning("Empty market data in process_trade_signals")
                 return
 
-            if 'ema_short' not in market_data.columns or 'ema_long' not in market_data.columns:
-                logging.warning("EMA columns not found in market data")
-                return
+            current_price = market_data['close'].iloc[-1]
+            analysis = self.analyze_price_trend(market_data)
+            rsi = analysis['rsi']
 
-            if amount_to_trade_formatted is None or amount_to_trade_formatted <= 0:
-                logging.warning("Invalid trade amount")
-                return
+            logging.info(f"""
+            Spot Trading Analysis:
+            Current Price: {current_price:.2f} USDT
+            RSI: {rsi:.2f}
+            24h Volume: {market_data['volume'].iloc[-1] * current_price:.2f} USDT
+            """)
 
-            # Get EMA signals
-            ema_short_last, ema_short_prev = market_data['ema_short'].iloc[-1], market_data['ema_short'].iloc[-2]
-            ema_long_last, ema_long_prev = market_data['ema_long'].iloc[-1], market_data['ema_long'].iloc[-2]
-
-            # Get trend analysis
-            trend_analysis = self.analyze_price_trend(market_data)
-
-            if trend_analysis is None:
-                logging.warning("Could not analyze price trend, skipping trade signal")
-                return
-
-            # Log trend analysis results
-            logging.info(f"Trend Analysis - RSI: {trend_analysis['rsi']:.2f}, "
-                        f"Momentum: {trend_analysis['momentum']:.4f}, "
-                        f"ADX: {trend_analysis['adx']:.2f}, "
-                        f"Trend Strength: {trend_analysis['trend_strength']:.2f}")
-
-            # Enhanced buy conditions
-            buy_conditions = (
-                # EMA crossover
-                ema_short_prev < ema_long_prev and ema_short_last > ema_long_last
-                # RSI not overbought
-                and trend_analysis['rsi'] < 70
-                # Strong trend
-                and trend_analysis['adx'] > 25
-                # Positive momentum
-                and trend_analysis['momentum'] > 0
-                # Strong upward trend
-                and trend_analysis['trend_strength'] > 0
-            )
-
-            if buy_conditions:
-                logging.info(f"Buy signal confirmed:")
-                logging.info(f"- EMA cross: Short {ema_short_last:.4f} over Long {ema_long_last:.4f}")
-                logging.info(f"- RSI: {trend_analysis['rsi']:.2f}")
-                logging.info(f"- ADX: {trend_analysis['adx']:.2f}")
-                logging.info(f"- Momentum: {trend_analysis['momentum']:.4f}")
-
+            # Check for buying conditions
+            if rsi < CONFIG['rsi_oversold']:
+                logging.info(f"Strong buy signal detected - RSI: {rsi:.2f}")
                 # Execute the trade
                 self.execute_trade("buy", amount_to_trade_formatted, symbol)
+            elif rsi < 45 and self.check_price_stability(market_data):
+                logging.info(f"Moderate buy signal detected - RSI: {rsi:.2f}")
+                # Execute the trade with smaller position
+                adjusted_amount = amount_to_trade_formatted * 0.7  # Reduce position size
+                self.execute_trade("buy", adjusted_amount, symbol)
             else:
-                logging.debug("Buy conditions not met:")
-                if ema_short_prev >= ema_long_prev or ema_short_last <= ema_long_last:
-                    logging.debug("- EMA crossover condition not met")
-                if trend_analysis['rsi'] >= 70:
-                    logging.debug("- RSI overbought")
-                if trend_analysis['adx'] <= 25:
-                    logging.debug("- Weak trend (ADX)")
-                if trend_analysis['momentum'] <= 0:
-                    logging.debug("- Negative momentum")
-                if trend_analysis['trend_strength'] <= 0:
-                    logging.debug("- Weak upward trend")
+                logging.info(f"No clear buy signal - RSI: {rsi:.2f}")
 
         except Exception as e:
             logging.error(f"Error in process_trade_signals: {str(e)}")
             logging.error(traceback.format_exc())
 
     def validate_market_conditions(self, market_data):
-        """Enhanced market conditions validation"""
+        """Validate market conditions specifically for spot trading"""
         try:
-            # Add detailed market data logging
-            logging.debug(f"""
-            Market Conditions:
-            Price: {market_data['close'].iloc[-1]}
-            Volume: {market_data['volume'].iloc[-1]}
-            EMA Short: {market_data['ema_short'].iloc[-1] if 'ema_short' in market_data else 'N/A'}
-            EMA Long: {market_data['ema_long'].iloc[-1] if 'ema_long' in market_data else 'N/A'}
-            RSI: {self.analyze_price_trend(market_data)['rsi'] if market_data is not None else 'N/A'}
-            """)
-
-            # Market health check
+            # 1. Basic market health check
             if not self.check_market_health():
-                logging.debug("Failed market health check")
+                logging.info("❌ Basic market health check failed")
                 return False
 
-            # 1. Check spread
-            if not self.check_spread(market_data):
-                logging.debug("Failed spread check")
+            # 2. Spread check
+            current_spread = self.check_spread(market_data)
+            logging.info(f"Current spread: {current_spread:.4%}")
+            if current_spread > CONFIG['max_spread_percent'] / 100:
+                logging.info("❌ Spread too high")
                 return False
 
-            # 2. Enhanced volume analysis
+            # 3. Volume validation
             current_volume = market_data['volume'].iloc[-1] * market_data['close'].iloc[-1]
             volume_ma = market_data['volume'].rolling(window=CONFIG['volume_ma_period']).mean().iloc[-1]
+            logging.info(f"✅ Volume check passed: {current_volume} > {volume_ma}")
 
-            if current_volume < volume_ma * CONFIG['min_volume_multiplier']:
-                logging.debug(f"Volume too low: {current_volume:.2f} < {volume_ma * CONFIG['min_volume_multiplier']:.2f}")
-                return False
+            # 4. RSI-based entry conditions
+            trend_analysis = self.analyze_price_trend(market_data)
+            rsi = trend_analysis['rsi']
 
-            # 3. Price movement check
-            price_change = abs(market_data['close'].pct_change().iloc[-1])
-            if price_change > CONFIG['price_change_threshold']:
-                logging.debug(f"Price change too high: {price_change:.4%}")
-                return False
+            # Good buying conditions:
+            # - RSI oversold (primary condition)
+            # - RSI below neutral and price showing stability
+            if rsi < CONFIG['rsi_oversold']:
+                logging.info(f"✅ Strong buy signal - RSI oversold: {rsi:.2f}")
+                return True
+            elif rsi < 45:  # Below neutral, potential accumulation zone
+                price_stability = self.check_price_stability(market_data)
+                if price_stability:
+                    logging.info(f"✅ Moderate buy signal - RSI below neutral with price stability: {rsi:.2f}")
+                    return True
 
-            # 4. Trend strength analysis
-            ema_short = self.calculate_ema(market_data, CONFIG['ema_short_period'])
-            ema_long = self.calculate_ema(market_data, CONFIG['ema_long_period'])
-            trend_strength = abs(ema_short.iloc[-1] - ema_long.iloc[-1]) / ema_long.iloc[-1]
-
-            if trend_strength < CONFIG['trend_strength_threshold']:
-                logging.debug(f"Trend strength too weak: {trend_strength:.4f}")
-                return False
-
-            # 5. Volatility check
-            atr = self.calculate_atr(market_data, CONFIG['atr_period'])
-            current_price = market_data['close'].iloc[-1]
-            atr_percentage = atr / current_price
-
-            if atr_percentage > CONFIG['max_atr_threshold']:
-                logging.debug(f"ATR too high: {atr_percentage:.4f}")
-                return False
-
-            # 6. VWAP analysis
-            vwap = self.calculate_vwap(market_data)
-            if abs(current_price - vwap) / vwap > CONFIG['max_spread_percent'] / 100:
-                logging.debug(f"Price too far from VWAP: {abs(current_price - vwap) / vwap:.4%}")
-                return False
-
-            # Add detailed logging for successful conditions
-            logging.info("Market conditions summary:")
-            logging.info(f"Volume: {current_volume:.2f} USDT")
-            logging.info(f"Price change: {price_change:.4%}")
-            logging.info(f"Trend strength: {trend_strength:.4f}")
-            logging.info(f"ATR percentage: {atr_percentage:.4f}")
-            logging.info(f"VWAP distance: {abs(current_price - vwap) / vwap:.4%}")
-
-            return True
+            logging.info(f"❌ RSI conditions not met: {rsi:.2f}")
+            return False
 
         except Exception as e:
             logging.error(f"Error validating market conditions: {str(e)}")
+            return False
+
+    def check_price_stability(self, market_data):
+        """Check if price is showing stability"""
+        try:
+            # Calculate price volatility over last few periods
+            recent_volatility = market_data['close'].pct_change().tail(5).std()
+
+            # Check if volatility is within acceptable range
+            if recent_volatility < CONFIG['price_stability_threshold']:
+                logging.info(f"Price showing stability - volatility: {recent_volatility:.4%}")
+                return True
+
+            return False
+        except Exception as e:
+            logging.error(f"Error checking price stability: {str(e)}")
             return False
 
     def analyze_price_trend(self, market_data, lookback_period=20):
