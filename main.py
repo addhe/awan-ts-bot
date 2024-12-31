@@ -8,6 +8,7 @@ import json
 import signal
 import sys
 import traceback
+import math
 
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
@@ -50,8 +51,61 @@ class TradeExecution:
         self.market_data = None
         self.active_positions = {}  # Untuk tracking posisi aktif
         self.position_history = []  # Untuk tracking riwayat posisi
-
+        self.initialize_files()
         self.load_positions()
+
+    def initialize_files(self):
+        """Initialize necessary files"""
+        try:
+            required_files = [
+                'active_positions.json',
+                'trade_history.json',
+                'performance_metrics_spot.json'
+            ]
+
+            for file in required_files:
+                if not os.path.exists(file):
+                    with open(file, 'w') as f:
+                        json.dump({}, f)
+                    logging.info(f"Created {file}")
+
+        except Exception as e:
+            logging.error(f"Error initializing files: {str(e)}")
+
+    def validate_price_action(self, market_data):
+        """Validate price action before entry"""
+        try:
+            # Get recent price movement
+            recent_prices = market_data['close'].tail(5)
+            price_change = abs(recent_prices.pct_change().mean())
+
+            # Check if price is stable enough
+            if price_change > CONFIG['price_stability_threshold']:
+                logging.info(f"Price movement too high: {price_change:.4%}")
+                return False
+
+            # Check if price is above VWAP
+            vwap = self.calculate_vwap(market_data)
+            current_price = market_data['close'].iloc[-1]
+
+            if current_price < vwap:
+                logging.info("Price below VWAP")
+                return False
+
+            return True
+
+        except Exception as e:
+            logging.error(f"Error validating price action: {str(e)}")
+            return False
+
+    def save_trade_history(self):
+        """Save trade history to file"""
+        try:
+            with open('trade_history.json', 'w') as f:
+                json.dump(self.trade_history, f)
+            logging.info("Trade history saved successfully")
+        except Exception as e:
+            logging.error(f"Error saving trade history: {str(e)}")
 
     def load_positions(self):
         """Load existing positions from file"""
@@ -1564,18 +1618,18 @@ Take Profit: {position['take_profit']} USDT
                 # Prepare trade notification
                 if side == "buy":
                     notification = f"""
-    🟢 Buy Order Executed:
-    Symbol: {symbol}
-    Amount: {executed_amount:.6f} {base_currency}
-    Price: {executed_price:.2f} {quote_currency}
-    Total Value: {executed_value:.2f} {quote_currency}
-    Slippage: {slippage:.4%}
+                    🟢 Buy Order Executed:
+                    Symbol: {symbol}
+                    Amount: {executed_amount:.6f} {base_currency}
+                    Price: {executed_price:.2f} {quote_currency}
+                    Total Value: {executed_value:.2f} {quote_currency}
+                    Slippage: {slippage:.4%}
 
-    Take Profit: {position_info['take_profit']:.2f}
-    Stop Loss: {position_info['stop_loss']:.2f}
+                    Take Profit: {position_info['take_profit']:.2f}
+                    Stop Loss: {position_info['stop_loss']:.2f}
 
-    Balance {quote_currency}: {balance_after[quote_currency]['free'] if balance_after else 'Unknown'}
-    Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                    Balance {quote_currency}: {balance_after[quote_currency]['free'] if balance_after else 'Unknown'}
+                    Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     """
                 else:
                     profit = None
@@ -1583,16 +1637,16 @@ Take Profit: {position['take_profit']} USDT
                         profit = position_info['profit']
 
                     notification = f"""
-    🔴 Sell Order Executed:
-    Symbol: {symbol}
-    Amount: {executed_amount:.6f} {base_currency}
-    Price: {executed_price:.2f} {quote_currency}
-    Total Value: {executed_value:.2f} {quote_currency}
-    Profit: {profit:.2f} {quote_currency} if profit else 'N/A'}
-    Slippage: {slippage:.4%}
+                    🔴 Sell Order Executed:
+                    Symbol: {symbol}
+                    Amount: {executed_amount:.6f} {base_currency}
+                    Price: {executed_price:.2f} {quote_currency}
+                    Total Value: {executed_value:.2f} {quote_currency}
+                    Profit: {profit:.2f} {quote_currency if profit else 'N/A'}
+                    Slippage: {slippage:.4%}
 
-    Balance {base_currency}: {balance_after[base_currency]['free'] if balance_after else 'Unknown'}
-    Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                    Balance {base_currency}: {balance_after[base_currency]['free'] if balance_after else 'Unknown'}
+                    Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
                     """
 
                 # Send notification
@@ -2387,86 +2441,104 @@ def get_min_trade_amount_and_notional(exchange, symbol):
         return None, None
 
 def main(performance, trade_history):
-    """
-    Main trading loop with enhanced monitoring and safety features for 24/7 spot trading
-    """
     global last_reported_day
-    recovery_delay = 60  # seconds
+    recovery_delay = 60  # detik
     max_retries = 3
     retry_count = 0
 
     while retry_count < max_retries:
         try:
-            # Initialize exchange and trade execution
-            exchange = initialize_exchange()
-            if exchange is None:
-                raise ValueError("Exchange initialization failed")
+            # Inisialisasi exchange
+            exchange = ccxt.binance({
+                'apiKey': CONFIG['api_key'],
+                'apiSecret': CONFIG['api_secret'],
+            })
 
-            symbol_base = CONFIG['symbol'].split('/')[0]
+            # Mengaktifkan Sandbox Mode (opsional)
+            if CONFIG['sandbox_mode']:
+                exchange.set_sandbox_mode(True)
+
+            # Inisialisasi trade execution
             trade_execution = TradeExecution(exchange, performance, trade_history)
 
-            # Verify exchange connection
-            if not trade_execution.check_exchange_connection():
-                logging.error("Exchange connection check failed")
-                raise ValueError("Exchange connection is not stable")
+            # Mengaktifkan log level
+            logging.basicConfig(level=logging.INFO)
 
-            # Daily balance reporting and position status
+            # Mengaktifkan log formatter
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            ch = logging.StreamHandler()
+            ch.setLevel(logging.INFO)
+            ch.setFormatter(formatter)
+            logging.getLogger().addHandler(ch)
+
+            # Mengaktifkan log file
+            if CONFIG['log_file']:
+                fh = logging.FileHandler(CONFIG['log_file'])
+                fh.setLevel(logging.INFO)
+                fh.setFormatter(formatter)
+                logging.getLogger().addHandler(fh)
+
+            # Memeriksa koneksi exchange
+            if not trade_execution.check_exchange_connection():
+                logging.error("Koneksi exchange gagal")
+                raise ValueError("Koneksi exchange gagal")
+
+            # Melakukan report balance harian
             current_day = datetime.now().date()
             if last_reported_day is None or last_reported_day != current_day:
                 trade_execution.report_balance_to_telegram()
 
-                # Report active positions at start of day
+                # Melakukan report posisi aktif di awal hari
                 position_status = trade_execution.get_position_status()
                 trade_execution.send_notification(
                     f"Daily Status Update:\n{position_status}"
                 )
                 last_reported_day = current_day
 
-            # Check if trading is allowed
+            # Memeriksa apakah trading diperbolehkan
             if not trade_execution.can_trade_time_based():
-                logging.info("Time-based trading restrictions in effect")
-                time.sleep(60)  # Wait before next check
+                logging.info("Trading diblokir karena alasan waktu")
+                time.sleep(60)  # Tunggu 60 detik sebelum memeriksa lagi
                 continue
 
-            # Setup signal handlers
+            # Mengaktifkan handler sinyal
             trade_execution.setup_signal_handlers()
 
-            # Validate configuration
-            global last_checked_time
+            # Mengaktifkan pemeriksaan konfigurasi
             config_update, last_checked_time = check_for_config_updates(last_checked_time)
             if config_update or not validate_config():
-                logging.error("Configuration validation failed")
-                time.sleep(300)  # Wait 5 minutes before retrying
+                logging.error("Konfigurasi tidak valid")
+                time.sleep(300)  # Tunggu 5 menit sebelum memeriksa lagi
                 continue
 
-            # Check performance metrics
+            # Memeriksa metrik kinerja
             if not performance.can_trade():
-                logging.info("Trading limits reached, waiting for reset")
+                logging.info("Batas trading telah tercapai, tunggu sampai reset")
                 time.sleep(300)
                 continue
 
-            # Balance validation
+            # Mengaktifkan validasi saldo
             balance = safe_api_call(exchange.fetch_balance)
             if balance is None:
-                raise ValueError("Failed to fetch balance")
+                raise ValueError("Gagal mengambil saldo")
 
             usdt_balance = balance['USDT']['free']
             if usdt_balance < CONFIG['min_balance']:
-                logging.warning(f"Insufficient balance: {usdt_balance} USDT")
+                logging.warning(f"Saldo tidak mencukupi: {usdt_balance} USDT")
                 time.sleep(300)
                 continue
 
-            # Fetch and validate market data
+            # Mengaktifkan pemeriksaan data pasar
             market_data = trade_execution.fetch_market_data(CONFIG['symbol'], CONFIG['timeframe'])
             if not trade_execution.validate_market_data(market_data):
-                logging.error("Invalid market data structure")
+                logging.error("Struktur data pasar tidak valid")
                 time.sleep(60)
                 continue
 
             trade_execution.market_data = market_data
             trade_execution.log_market_summary(market_data)
 
-            # Check and manage existing positions first
+            # Mengaktifkan pengelolaan posisi yang ada
             current_price = market_data['close'].iloc[-1]
             if trade_execution.has_open_positions(CONFIG['symbol']):
                 trade_execution.manage_existing_positions(
@@ -2475,12 +2547,12 @@ def main(performance, trade_history):
                     market_data=market_data
                 )
 
-                # Update position status every cycle
+                # Mengaktifkan pembaruan status posisi setiap siklus
                 trade_execution.update_positions()
 
-            # Check for new trade opportunities
+            # Mengaktifkan pemeriksaan kesempatan trading yang baru
             if trade_execution.validate_trading_conditions(market_data):
-                # Calculate position size
+                # Menghitung ukuran posisi
                 position_sizing_result = trade_execution.calculate_position_size(
                     balance=usdt_balance,
                     current_price=current_price,
@@ -2491,45 +2563,45 @@ def main(performance, trade_history):
                     optimal_position, amount_to_trade_formatted = position_sizing_result
 
                     if trade_execution.validate_entry_conditions(market_data, amount_to_trade_formatted):
-                        # Perform technical analysis
+                        # Melakukan analisis teknikal
                         analysis_result = trade_execution.perform_technical_analysis(market_data)
 
                         if analysis_result is not None:
-                            # Process trading signals
+                            # Mengaktifkan proses sinyal trading
                             trade_execution.process_trade_signals(
                                 market_data=market_data,
                                 symbol=CONFIG['symbol'],
                                 amount_to_trade_formatted=amount_to_trade_formatted
                             )
 
-                            # Log trading metrics
+                            # Mengaktifkan log metrik trading
                             trade_execution.log_trading_metrics(
-                                symbol_base=symbol_base,
+                                symbol_base=CONFIG['symbol'].split('/')[0],
                                 optimal_position=optimal_position,
                                 amount_to_trade=amount_to_trade_formatted,
                                 current_price=current_price
                             )
 
-            # Monitor performance
+            # Mengaktifkan pemantauan metrik kinerja
             trade_execution.monitor_performance()
 
-            # Wait for next iteration
+            # Tunggu sampai siklus berikutnya
             time.sleep(CONFIG['min_trade_interval'])
 
         except Exception as e:
             retry_count += 1
-            error_message = f'Error in main loop (attempt {retry_count}/{max_retries}): {str(e)}'
+            error_message = f"Kesalahan pada loop utama (percobaan {retry_count}/{max_retries}): {str(e)}"
             logging.error(error_message)
             trade_execution.send_notification(error_message)
 
             if retry_count < max_retries:
-                logging.info(f"Waiting {recovery_delay} seconds before retry...")
+                logging.info(f"Menunggu {recovery_delay} detik sebelum mencoba lagi...")
                 time.sleep(recovery_delay)
-                recovery_delay *= 2  # Exponential backoff
+                recovery_delay *= 2  # Backoff eksponensial
             else:
-                # Send critical error notification
+                # Mengirimkan notifikasi kesalahan kritis
                 trade_execution.send_notification(
-                    "🚨 Critical Error: Bot stopped after maximum retries. Manual intervention required."
+                    "Kesalahan kritis: Bot berhenti setelah mencapai batas percobaan maksimum. Diperlukan intervensi manual."
                 )
                 raise
 
@@ -2538,7 +2610,7 @@ def main(performance, trade_history):
                 if 'trade_execution' in locals():
                     trade_execution.cleanup()
             except Exception as cleanup_error:
-                logging.error(f"Error during cleanup: {str(cleanup_error)}")
+                logging.error(f"Kesalahan pada proses pembersihan: {str(cleanup_error)}")
 
 # Ensure this is declared outside the function to maintain its state across iterations
 last_reported_day = None
