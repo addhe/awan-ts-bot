@@ -49,8 +49,399 @@ class TradeExecution:
         self.trade_history = trade_history
         self.market_data = None
 
+    def setup_signal_handlers(self):
+        """Setup signal handlers for graceful shutdown"""
+        try:
+            def handle_shutdown(signum, frame):
+                logging.info(f"Received signal {signum}, initiating graceful shutdown")
+                self.cleanup()
+                sys.exit(0)
+
+            # Remove global handlers
+            signal.signal(signal.SIGTERM, handle_shutdown)
+            signal.signal(signal.SIGINT, handle_shutdown)
+            logging.info("Signal handlers setup completed")
+        except Exception as e:
+            logging.error(f"Error setting up signal handlers: {str(e)}")
+
+    def handle_shutdown(self, signum, frame):
+        """Handle shutdown signals"""
+        logging.info(f"Received signal {signum}, initiating graceful shutdown")
+        self.cleanup()
+        sys.exit(0)
+
+    def has_open_positions(self, symbol):
+        """Check if there are open positions for the symbol"""
+        try:
+            balance = safe_api_call(self.exchange.fetch_balance)
+            if balance is None:
+                return False
+
+            base_currency = symbol.split('/')[0]
+            position_size = balance[base_currency]['free']
+
+            return position_size > 0
+        except Exception as e:
+            logging.error(f"Error checking open positions: {str(e)}")
+            return False
+
+    def should_exit_position(self, position, current_price, market_data):
+        """Determine if position should be exited"""
+        try:
+            # Stop loss hit
+            if current_price <= position['current_stop']:
+                logging.info("Stop loss triggered")
+                return True
+
+            # Take profit hit
+            if current_price >= position['take_profit']:
+                logging.info("Take profit target reached")
+                return True
+
+            # Technical exit signals
+            if self.check_technical_exit_signals(market_data):
+                logging.info("Technical exit signal triggered")
+                return True
+
+            return False
+
+        except Exception as e:
+            logging.error(f"Error checking exit conditions: {str(e)}")
+            return False
+
+    def manage_existing_positions(self, symbol, current_price, market_data):
+        """Enhanced position management"""
+        try:
+            # Get position details
+            position = self.get_position_entry(symbol)
+            if position is None:
+                return
+
+            # Check position duration
+            position_age = (datetime.now() - position['entry_time']).total_seconds()
+            if position_age > CONFIG['position_max_duration']:
+                logging.info("Position exceeded maximum duration, closing")
+                self.execute_trade("sell", position['position_size'], symbol)
+                return
+
+            # Check update interval
+            time_since_update = (datetime.now() - position['last_update']).total_seconds()
+            if time_since_update < CONFIG['position_update_interval']:
+                return
+
+            # Update trailing stop
+            new_stop = self.implement_trailing_stop(
+                position['entry_price'],
+                current_price,
+                position['position_size']
+            )
+
+            # Update position info
+            position['last_update'] = datetime.now()
+            position['current_stop'] = new_stop
+
+            # Check exit conditions
+            if self.should_exit_position(position, current_price, market_data):
+                self.execute_trade("sell", position['position_size'], symbol)
+
+        except Exception as e:
+            logging.error(f"Error managing positions: {str(e)}")
+
+    def cleanup(self):
+        """Cleanup resources before shutdown"""
+        try:
+            logging.info("Initiating cleanup process")
+
+            # Cancel any pending orders
+            open_orders = safe_api_call(self.exchange.fetch_open_orders, CONFIG['symbol'])
+            if open_orders:
+                for order in open_orders:
+                    safe_api_call(self.exchange.cancel_order, order['id'], CONFIG['symbol'])
+                    logging.info(f"Cancelled order {order['id']}")
+
+            # Save performance metrics
+            self.performance.save_metrics()
+
+            # Close exchange connection if available
+            if hasattr(self.exchange, 'close'):
+                self.exchange.close()
+
+            logging.info("Cleanup completed successfully")
+        except Exception as e:
+            logging.error(f"Error during cleanup: {str(e)}")
+
+    def validate_trading_conditions(self, market_data):
+        """Comprehensive trading conditions validation"""
+        try:
+            # Market health check
+            if not self.check_market_health():
+                logging.debug("Failed market health check")
+                return False
+
+            # Market conditions validation
+            if not self.validate_market_conditions(market_data):
+                logging.debug("Failed market conditions validation")
+                return False
+
+            # Spread check
+            if not self.check_spread(market_data):
+                logging.debug("Failed spread check")
+                return False
+
+            return True
+
+        except Exception as e:
+            logging.error(f"Error validating trading conditions: {str(e)}")
+            return False
+
+    def implement_risk_management(self, symbol, entry_price, position_size, order):
+        """Enhanced risk management implementation"""
+        try:
+            # Basic setup
+            stop_loss = self.calculate_stop_loss(entry_price)
+            take_profit = entry_price * (1 + CONFIG['profit_target_percent'] / 100)
+
+            # Order tracking
+            order_id = order['id']
+            entry_time = datetime.now()
+
+            # Save position info
+            position_info = {
+                'order_id': order_id,
+                'entry_time': entry_time,
+                'entry_price': entry_price,
+                'position_size': position_size,
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'last_update': entry_time
+            }
+
+            # Implement trailing stop
+            trailing_stop = self.implement_trailing_stop(
+                entry_price=entry_price,
+                current_price=entry_price,
+                position_size=position_size
+            )
+
+            # Check slippage
+            actual_entry = float(order['price'])
+            slippage = abs(actual_entry - entry_price) / entry_price
+            if slippage > CONFIG['max_slippage']:
+                logging.warning(f"High slippage detected: {slippage:.2%}")
+
+            # Set take profits
+            self.implement_partial_take_profits(entry_price, position_size)
+
+            return position_info
+
+        except Exception as e:
+            logging.error(f"Error implementing risk management: {str(e)}")
+            return None
+
+    def get_position_entry(self, symbol):
+        """Get entry details for current position"""
+        try:
+            trades = self.trade_history.get(symbol, [])
+            if not trades:
+                return None
+
+            # Get most recent buy trade
+            buy_trades = [t for t in trades if t['side'] == 'buy']
+            if not buy_trades:
+                return None
+
+            return buy_trades[-1]
+
+        except Exception as e:
+            logging.error(f"Error getting position entry: {str(e)}")
+            return None
+
+    def validate_market_data(self, market_data):
+        """Validate market data structure and content"""
+        try:
+            if market_data is None or market_data.empty:
+                return False
+
+            required_columns = ['open', 'high', 'low', 'close', 'volume']
+            if not all(col in market_data.columns for col in required_columns):
+                logging.error("Missing required columns in market data")
+                return False
+
+            if len(market_data) < CONFIG['min_candles_required']:
+                logging.error("Insufficient historical data")
+                return False
+
+            return True
+        except Exception as e:
+            logging.error(f"Error validating market data: {str(e)}")
+            return False
+
+    def log_trading_metrics(self, symbol_base, optimal_position, amount_to_trade, current_price):
+        """Log comprehensive trading metrics"""
+        try:
+            logging.info("=== Trading Metrics ===")
+            logging.info(f"Symbol: {symbol_base}")
+            logging.info(f"Current Price: {current_price:.2f}")
+            logging.info(f"Optimal Position: {optimal_position:.4f}")
+            logging.info(f"Trade Amount: {amount_to_trade:.4f}")
+            logging.info(f"Notional Value: {amount_to_trade * current_price:.2f} USDT")
+            logging.info("===================")
+
+        except Exception as e:
+            logging.error(f"Error logging trading metrics: {str(e)}")
+
+    def execute_trade_with_safety(self, side, amount, symbol, current_price):
+        """Execute trade with additional safety checks"""
+        try:
+            # Pre-trade validation
+            if not self.validate_trading_conditions(self.market_data):
+                return False
+
+            # Execute trade
+            order = self.execute_trade(side, amount, symbol)
+            if order is None:
+                return False
+
+            # Post-trade actions
+            self.implement_risk_management(
+                symbol=symbol,
+                entry_price=current_price,
+                position_size=amount,
+                order=order
+            )
+
+            return True
+
+        except Exception as e:
+            logging.error(f"Error executing trade with safety: {str(e)}")
+            return False
+
+    def should_execute_trade(self, analysis_result, market_data):
+        """Determine if trade should be executed based on analysis"""
+        try:
+            if analysis_result is None:
+                return False
+
+            # Check for buy conditions
+            ema_short = analysis_result['ema_data']['ema_short']
+            ema_long = analysis_result['ema_data']['ema_long']
+            trend = analysis_result['trend_analysis']
+
+            # Enhanced buy conditions
+            buy_conditions = (
+                ema_short.iloc[-2] < ema_long.iloc[-2] and  # Previous crossover
+                ema_short.iloc[-1] > ema_long.iloc[-1] and  # Current crossover
+                trend['rsi'] < CONFIG['rsi_overbought'] and
+                trend['adx'] > CONFIG['adx_threshold'] and
+                trend['momentum'] > CONFIG['momentum_threshold'] and
+                trend['trend_strength'] > CONFIG['trend_strength_threshold']
+            )
+
+            return buy_conditions
+
+        except Exception as e:
+            logging.error(f"Error checking trade conditions: {str(e)}")
+            return False
+
+    def perform_technical_analysis(self, market_data):
+        """Perform comprehensive technical analysis"""
+        try:
+            # Calculate EMAs
+            market_data['ema_short'] = self.calculate_ema(market_data, CONFIG['ema_short_period'])
+            market_data['ema_long'] = self.calculate_ema(market_data, CONFIG['ema_long_period'])
+
+            # Get trend analysis
+            trend_analysis = self.analyze_price_trend(market_data)
+
+            if None in [market_data['ema_short'], market_data['ema_long'], trend_analysis]:
+                return None
+
+            return {
+                'ema_data': market_data[['ema_short', 'ema_long']],
+                'trend_analysis': trend_analysis
+            }
+
+        except Exception as e:
+            logging.error(f"Error performing technical analysis: {str(e)}")
+            return None
+
+    def calculate_position_size(self, balance, current_price, market_data):
+        """Calculate and validate position size"""
+        try:
+            # Calculate optimal position
+            optimal_position = self.calculate_optimal_position_size(balance, current_price)
+            if optimal_position is None:
+                return None
+
+            # Apply fees
+            estimated_fee = optimal_position * CONFIG['fee_rate']
+            amount_to_trade = optimal_position - estimated_fee
+
+            # Get minimum trade requirements
+            min_trade_amount, min_notional = get_min_trade_amount_and_notional(
+                self.exchange,
+                CONFIG['symbol']
+            )
+
+            # Format and validate final amount
+            amount_to_trade_formatted = adjust_trade_amount(
+                amount_to_trade,
+                current_price,
+                min_trade_amount,
+                min_notional
+            )
+
+            if amount_to_trade_formatted is None:
+                return None
+
+            # Validate position size
+            if not self.validate_position_size(amount_to_trade_formatted, current_price):
+                return None
+
+            return optimal_position, amount_to_trade_formatted
+
+        except Exception as e:
+            logging.error(f"Error calculating position size: {str(e)}")
+            return None
+
+    def validate_position_size(self, amount, price):
+        try:
+            notional_value = amount * price
+            min_notional = CONFIG.get('min_notional_value', 10)  # Add to config
+            max_notional = CONFIG.get('max_notional_value', 1000)  # Add to config
+
+            if notional_value < min_notional:
+                logging.warning(f"Position size too small: {notional_value} USDT")
+                return False
+
+            if notional_value > max_notional:
+                logging.warning(f"Position size too large: {notional_value} USDT")
+                return False
+
+            return True
+        except Exception as e:
+            logging.error(f"Error validating position size: {str(e)}")
+            return False
+
+    def check_market_health(self):
+        try:
+            # Check 24h volume
+            ticker = safe_api_call(self.exchange.fetch_ticker, CONFIG['symbol'])
+            if ticker['quoteVolume'] < CONFIG['min_volume_usdt'] * 24:
+                logging.warning("24h volume too low")
+                return False
+
+            # Check if market is trending or ranging
+            atr = self.calculate_atr(self.market_data, CONFIG['atr_period'])
+            if atr is None or atr == float('inf'):
+                return False
+
+            return True
+        except Exception as e:
+            logging.error(f"Error checking market health: {str(e)}")
+            return False
+
     def check_spread(self, market_data):
-        """Check if spread is within acceptable range"""
         try:
             if 'ask' not in market_data or 'bid' not in market_data:
                 logging.warning("Ask/Bid data not available, skipping spread check")
@@ -59,14 +450,23 @@ class TradeExecution:
             spread = (market_data['ask'].iloc[-1] - market_data['bid'].iloc[-1]) / market_data['bid'].iloc[-1]
             logging.info(f"Current spread: {spread:.4%}")
 
+            # Add monitoring for unusual spreads
+            if spread < 0:
+                logging.warning(f"Negative spread detected: {spread:.4%}")
+                return False
+
             if spread > CONFIG['max_spread_percent'] / 100:
                 logging.warning(f"Spread too high: {spread:.4%}")
                 return False
 
+            # Log when spread is approaching maximum
+            if spread > (CONFIG['max_spread_percent'] / 100) * 0.8:
+                logging.warning(f"Spread approaching maximum threshold: {spread:.4%}")
+
             return True
         except Exception as e:
             logging.error(f"Error checking spread: {str(e)}")
-            return True
+            return False  # Changed to return False on error
 
     def calculate_optimal_position_size(self, balance, current_price):
         """Calculate optimal position size based on risk management"""
@@ -338,41 +738,184 @@ class TradeExecution:
             self.execute_trade("sell", eth_balance, symbol)
 
     def process_trade_signals(self, market_data, symbol, amount_to_trade_formatted):
-        ema_short_last, ema_short_prev = market_data['ema_short'].iloc[-1], market_data['ema_short'].iloc[-2]
-        ema_long_last, ema_long_prev = market_data['ema_long'].iloc[-1], market_data['ema_long'].iloc[-2]
+        """Process trading signals with enhanced trend analysis"""
+        try:
+            # Validate inputs
+            if market_data is None or market_data.empty:
+                logging.warning("Empty market data in process_trade_signals")
+                return
 
-        if ema_short_prev < ema_long_prev and ema_short_last > ema_long_last:
-            logging.info(f"Buy signal confirmed: EMA short {ema_short_last:.4f} over EMA long {ema_long_last:.4f}")
-            self.execute_trade("buy", amount_to_trade_formatted, symbol)
+            if 'ema_short' not in market_data.columns or 'ema_long' not in market_data.columns:
+                logging.warning("EMA columns not found in market data")
+                return
+
+            if amount_to_trade_formatted is None or amount_to_trade_formatted <= 0:
+                logging.warning("Invalid trade amount")
+                return
+
+            # Get EMA signals
+            ema_short_last, ema_short_prev = market_data['ema_short'].iloc[-1], market_data['ema_short'].iloc[-2]
+            ema_long_last, ema_long_prev = market_data['ema_long'].iloc[-1], market_data['ema_long'].iloc[-2]
+
+            # Get trend analysis
+            trend_analysis = self.analyze_price_trend(market_data)
+
+            if trend_analysis is None:
+                logging.warning("Could not analyze price trend, skipping trade signal")
+                return
+
+            # Log trend analysis results
+            logging.info(f"Trend Analysis - RSI: {trend_analysis['rsi']:.2f}, "
+                        f"Momentum: {trend_analysis['momentum']:.4f}, "
+                        f"ADX: {trend_analysis['adx']:.2f}, "
+                        f"Trend Strength: {trend_analysis['trend_strength']:.2f}")
+
+            # Enhanced buy conditions
+            buy_conditions = (
+                # EMA crossover
+                ema_short_prev < ema_long_prev and ema_short_last > ema_long_last
+                # RSI not overbought
+                and trend_analysis['rsi'] < 70
+                # Strong trend
+                and trend_analysis['adx'] > 25
+                # Positive momentum
+                and trend_analysis['momentum'] > 0
+                # Strong upward trend
+                and trend_analysis['trend_strength'] > 0
+            )
+
+            if buy_conditions:
+                logging.info(f"Buy signal confirmed:")
+                logging.info(f"- EMA cross: Short {ema_short_last:.4f} over Long {ema_long_last:.4f}")
+                logging.info(f"- RSI: {trend_analysis['rsi']:.2f}")
+                logging.info(f"- ADX: {trend_analysis['adx']:.2f}")
+                logging.info(f"- Momentum: {trend_analysis['momentum']:.4f}")
+
+                # Execute the trade
+                self.execute_trade("buy", amount_to_trade_formatted, symbol)
+            else:
+                logging.debug("Buy conditions not met:")
+                if ema_short_prev >= ema_long_prev or ema_short_last <= ema_long_last:
+                    logging.debug("- EMA crossover condition not met")
+                if trend_analysis['rsi'] >= 70:
+                    logging.debug("- RSI overbought")
+                if trend_analysis['adx'] <= 25:
+                    logging.debug("- Weak trend (ADX)")
+                if trend_analysis['momentum'] <= 0:
+                    logging.debug("- Negative momentum")
+                if trend_analysis['trend_strength'] <= 0:
+                    logging.debug("- Weak upward trend")
+
+        except Exception as e:
+            logging.error(f"Error in process_trade_signals: {str(e)}")
+            logging.error(traceback.format_exc())
 
     def validate_market_conditions(self, market_data):
-        """Additional trade validation filters"""
+        """Enhanced market conditions validation"""
         try:
-            # Check spread first
+            # 1. Check spread
             if not self.check_spread(market_data):
-                logging.warning("Spread check failed")
+                logging.debug("Failed spread check")
                 return False
-            # Volume filter
-            if market_data['volume'].iloc[-1] * market_data['close'].iloc[-1] < CONFIG['min_volume_usdt']:
+
+            # 2. Enhanced volume analysis
+            current_volume = market_data['volume'].iloc[-1] * market_data['close'].iloc[-1]
+            volume_ma = market_data['volume'].rolling(window=CONFIG['volume_ma_period']).mean().iloc[-1]
+
+            if current_volume < volume_ma * CONFIG['min_volume_multiplier']:
+                logging.debug(f"Volume too low: {current_volume:.2f} < {volume_ma * CONFIG['min_volume_multiplier']:.2f}")
                 return False
-            # ATR filter for volatility
+
+            # 3. Price movement check
+            price_change = abs(market_data['close'].pct_change().iloc[-1])
+            if price_change > CONFIG['price_change_threshold']:
+                logging.debug(f"Price change too high: {price_change:.4%}")
+                return False
+
+            # 4. Trend strength analysis
+            ema_short = self.calculate_ema(market_data, CONFIG['ema_short_period'])
+            ema_long = self.calculate_ema(market_data, CONFIG['ema_long_period'])
+            trend_strength = abs(ema_short.iloc[-1] - ema_long.iloc[-1]) / ema_long.iloc[-1]
+
+            if trend_strength < CONFIG['trend_strength_threshold']:
+                logging.debug(f"Trend strength too weak: {trend_strength:.4f}")
+                return False
+
+            # 5. Volatility check
             atr = self.calculate_atr(market_data, CONFIG['atr_period'])
-            if atr > CONFIG['max_atr_threshold']:
+            current_price = market_data['close'].iloc[-1]
+            atr_percentage = atr / current_price
+
+            if atr_percentage > CONFIG['max_atr_threshold']:
+                logging.debug(f"ATR too high: {atr_percentage:.4f}")
                 return False
-            # VWAP filter
+
+            # 6. VWAP analysis
             vwap = self.calculate_vwap(market_data)
-            if market_data['close'].iloc[-1] < vwap:
+            if abs(current_price - vwap) / vwap > CONFIG['max_spread_percent'] / 100:
+                logging.debug(f"Price too far from VWAP: {abs(current_price - vwap) / vwap:.4%}")
                 return False
-            # Funding rate check for market sentiment
-            funding_rate = self.get_funding_rate()
-            if abs(funding_rate) > CONFIG['funding_rate_threshold']:
-                return False
+
+            # Add detailed logging for successful conditions
+            logging.info("Market conditions summary:")
+            logging.info(f"Volume: {current_volume:.2f} USDT")
+            logging.info(f"Price change: {price_change:.4%}")
+            logging.info(f"Trend strength: {trend_strength:.4f}")
+            logging.info(f"ATR percentage: {atr_percentage:.4f}")
+            logging.info(f"VWAP distance: {abs(current_price - vwap) / vwap:.4%}")
 
             return True
 
         except Exception as e:
-            logging.error(f"Error validating trade conditions: {str(e)}")
+            logging.error(f"Error validating market conditions: {str(e)}")
             return False
+
+    def analyze_price_trend(self, market_data, lookback_period=20):
+        """Analyze price trend using multiple indicators"""
+        try:
+            close_prices = market_data['close']
+
+            # Calculate RSI
+            delta = close_prices.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+
+            # Calculate price momentum
+            momentum = close_prices.pct_change(periods=lookback_period)
+
+            # Calculate average directional index (ADX)
+            high_prices = market_data['high']
+            low_prices = market_data['low']
+
+            plus_dm = high_prices.diff()
+            minus_dm = low_prices.diff()
+            plus_dm = plus_dm.where(plus_dm > 0, 0)
+            minus_dm = minus_dm.where(minus_dm > 0, 0)
+
+            tr = pd.DataFrame({
+                'hl': high_prices - low_prices,
+                'hc': abs(high_prices - close_prices.shift(1)),
+                'lc': abs(low_prices - close_prices.shift(1))
+            }).max(axis=1)
+
+            smoothing = 14
+            plus_di = 100 * (plus_dm.rolling(smoothing).mean() / tr.rolling(smoothing).mean())
+            minus_di = 100 * (minus_dm.rolling(smoothing).mean() / tr.rolling(smoothing).mean())
+            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+            adx = dx.rolling(smoothing).mean()
+
+            return {
+                'rsi': rsi.iloc[-1],
+                'momentum': momentum.iloc[-1],
+                'adx': adx.iloc[-1],
+                'trend_strength': (plus_di.iloc[-1] - minus_di.iloc[-1])
+            }
+
+        except Exception as e:
+            logging.error(f"Error in trend analysis: {str(e)}")
+            return None
 
     def calculate_vwap(self, market_data):
         """Calculate Volume Weighted Average Price"""
@@ -520,7 +1063,11 @@ class TradeExecution:
 
     @staticmethod
     def calculate_ema(df, period, column='close'):
-        return df[column].ewm(span=period, adjust=False).mean
+        try:
+            return df[column].ewm(span=period, adjust=False).mean()
+        except Exception as e:
+            logging.error(f"Error calculating EMA: {str(e)}")
+            return None
 
     @staticmethod
     def validate_ema_strategy(config):
@@ -839,100 +1386,113 @@ def get_min_trade_amount_and_notional(exchange, symbol):
         return None, None
 
 def main(performance, trade_history):
-    global CONFIG
-    exchange = initialize_exchange()
-    symbol_base = CONFIG['symbol'].split('/')[0]
-    trade_execution = TradeExecution(exchange, performance, trade_history)
-
-    if exchange is None:
-        logging.error("Exchange initialization failed")
-        return
-
+    """
+    Main trading execution loop with enhanced validation and safety checks
+    """
     try:
+        # Initialize exchange and trade execution
+        exchange = initialize_exchange()
+        if exchange is None:
+            raise ValueError("Exchange initialization failed")
+
+        symbol_base = CONFIG['symbol'].split('/')[0]
+        trade_execution = TradeExecution(exchange, performance, trade_history)
+
+        # Setup proper signal handling
+        trade_execution.setup_signal_handlers()
+
+        # Configuration validation
         global last_checked_time
         config_update, last_checked_time = check_for_config_updates(last_checked_time)
-        if config_update:
-            check_for_config_updates()
-            logging.info("Configuration updated, reloading...")
-
-        if not validate_config():
+        if config_update or not validate_config():
             logging.error("Configuration validation failed")
             return
 
+        # Performance checks
         if not performance.can_trade():
-            message = "Trading limits reached"
-            logging.info(message)
-            send_telegram_notification(message)
+            logging.info("Trading limits reached, skipping trading cycle")
             return
 
+        # Balance validation
         balance = safe_api_call(exchange.fetch_balance)
+        if balance is None:
+            raise ValueError("Failed to fetch balance")
+
         usdt_balance = balance['USDT']['free']
-
         if usdt_balance < CONFIG['min_balance']:
-            error_message = f"Insufficient balance: {usdt_balance} USDT"
-            logging.error(error_message)
-            send_telegram_notification(error_message)
+            logging.warning(f"Insufficient balance: {usdt_balance} USDT")
             return
 
-        # Fetch and analyze market data
+        # Market data fetching and validation
         market_data = trade_execution.fetch_market_data(CONFIG['symbol'], CONFIG['timeframe'])
-        if market_data is None:
-            error_message = f"Failed to retrieve market data for {CONFIG['symbol']}."
-            logging.error(error_message)
-            send_telegram_notification(error_message)
+        if not trade_execution.validate_market_data(market_data):
+            logging.error("Invalid market data structure")
             return
 
-        # Then update trade execution with market data
         trade_execution.market_data = market_data
 
-        # Validate market conditions including spread
-        if not trade_execution.validate_market_conditions(market_data):
-            info_message = f"Market conditions not met for {CONFIG['symbol']}, skipping trading opportunity."
-            logging.info(info_message)
-            send_telegram_notification(info_message)
+        # Comprehensive trading conditions validation
+        if not trade_execution.validate_trading_conditions(market_data):
+            logging.info(f"Trading conditions not met for {CONFIG['symbol']}")
             return
 
-        # Calculate amount to trade using optimal position sizing
+        # Position sizing and validation
         current_price = market_data['close'].iloc[-1]
-        optimal_position = trade_execution.calculate_optimal_position_size(usdt_balance, current_price)
+        position_sizing_result = trade_execution.calculate_position_size(
+            balance=usdt_balance,
+            current_price=current_price,
+            market_data=market_data
+        )
 
-        if optimal_position is None:
-            logging.error("Failed to calculate optimal position size")
+        if position_sizing_result is None:
+            logging.warning("Failed to calculate valid position size")
             return
 
-        # Apply fees
-        estimated_fee = optimal_position * CONFIG['fee_rate']
-        amount_to_trade = optimal_position - estimated_fee
+        optimal_position, amount_to_trade_formatted = position_sizing_result
 
-        # Ensure minimal conditions align with final trading amount
-        min_trade_amount, min_notional = get_min_trade_amount_and_notional(exchange, CONFIG['symbol'])
-        amount_to_trade_formatted = adjust_trade_amount(amount_to_trade, current_price, min_trade_amount, min_notional)
-
-        if amount_to_trade_formatted is None:
+        # Technical analysis
+        analysis_result = trade_execution.perform_technical_analysis(market_data)
+        if analysis_result is None:
+            logging.error("Failed to perform technical analysis")
             return
 
-        # Calculate EMAs
-        market_data['ema_short'] = TradeExecution.calculate_ema(market_data, CONFIG['ema_short_period'])
-        market_data['ema_long'] = TradeExecution.calculate_ema(market_data, CONFIG['ema_long_period'])
+        # Check existing positions and manage them
+        if trade_execution.has_open_positions(CONFIG['symbol']):
+            trade_execution.manage_existing_positions(
+                symbol=CONFIG['symbol'],
+                current_price=current_price,
+                market_data=market_data
+            )
 
-        latest_close_price = market_data['close'].iloc[-1]
-        logging.info(f"Latest close price: {latest_close_price}")
+        # Process trading signals
+        if trade_execution.should_execute_trade(analysis_result, market_data):
+            trade_execution.execute_trade_with_safety(
+                side="buy",
+                amount=amount_to_trade_formatted,
+                symbol=CONFIG['symbol'],
+                current_price=current_price
+            )
 
-        # Check for sell signals
-        trade_execution.check_for_sell_signal(CONFIG['symbol'], latest_close_price)
-
-        logging.info(f"Calculated optimal position: {optimal_position} {symbol_base}")
-        logging.info(f"Estimated fee: {estimated_fee} {symbol_base}")
-        logging.info(f"Amount to trade after fees: {amount_to_trade} {symbol_base}")
-        logging.info(f"Formatted amount to trade: {amount_to_trade_formatted} {symbol_base}")
-
-        # Process EMA based buy signal
-        trade_execution.process_trade_signals(market_data, CONFIG['symbol'], amount_to_trade_formatted)
+        # Log trading metrics
+        trade_execution.log_trading_metrics(
+            symbol_base=symbol_base,
+            optimal_position=optimal_position,
+            amount_to_trade=amount_to_trade_formatted,
+            current_price=current_price
+        )
 
     except Exception as e:
-        error_message = f'Critical error in main loop: {str(e)}'
+        error_message = f'Critical error in main loop: {str(e)}\n{traceback.format_exc()}'
         logging.error(error_message)
         send_telegram_notification(error_message)
+
+    finally:
+        # Ensure proper cleanup
+        try:
+            trade_execution.cleanup()
+        except Exception as cleanup_error:
+            logging.error(f"Error during cleanup: {str(cleanup_error)}")
+
 
 if __name__ == '__main__':
     performance = PerformanceMetrics()
