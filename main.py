@@ -49,6 +49,22 @@ class TradeExecution:
         self.trade_history = trade_history
         self.market_data = None
 
+    def handle_trade_error(self, error, retry_count=3):
+        for i in range(retry_count):
+            try:
+                # Retry logic
+                time.sleep(2 ** i)  # Exponential backoff
+            except Exception as e:
+                logging.error(f"Retry {i+1} failed: {e}")
+
+    def check_exchange_connection(self):
+        try:
+            self.exchange.fetch_ticker(CONFIG['symbol'])
+            return True
+        except Exception as e:
+            logging.error(f"Exchange connection error: {e}")
+            return False
+
     def get_account_value(self):
         """Get total account value in USDT"""
         try:
@@ -773,6 +789,11 @@ class TradeExecution:
     def execute_trade_with_safety(self, side, amount, symbol, current_price):
         """Execute trade with additional safety checks"""
         try:
+            # Add exchange connection check
+            if not self.check_exchange_connection():
+                logging.error("Exchange connection check failed before safety checks")
+                return False
+
             # Check open orders count
             open_orders = safe_api_call(self.exchange.fetch_open_orders, symbol)
             if len(open_orders) >= CONFIG['max_open_orders']:
@@ -812,6 +833,7 @@ class TradeExecution:
             return True
     
         except Exception as e:
+            self.handle_trade_error(e)
             logging.error(f"Error executing trade with safety: {str(e)}")
             return False
 
@@ -868,8 +890,10 @@ class TradeExecution:
         try:
             # Base position size calculation
             risk_amount = balance * (CONFIG['risk_percentage'] / 100)
-            base_position = risk_amount / current_price
-
+            base_position = max(
+                CONFIG['min_position_size'],
+                risk_amount / current_price
+            )
             # Apply volatility-based adjustment
             volatility = self.calculate_volatility()
             if volatility:
@@ -1176,6 +1200,11 @@ class TradeExecution:
             symbol (str): Trading pair symbol
         """
         try:
+            # Add exchange connection check
+            if not self.check_exchange_connection():
+                logging.error("Exchange connection check failed before trade execution")
+                return None
+
             start_time = time.time()
 
             # Validate market conditions first
@@ -1239,6 +1268,7 @@ class TradeExecution:
             return None
 
         except Exception as e:
+            self.handle_trade_error(e)
             logging.error(f"Error in execute_trade: {str(e)}")
             return None
 
@@ -1957,6 +1987,10 @@ def main(performance, trade_history):
             symbol_base = CONFIG['symbol'].split('/')[0]
             trade_execution = TradeExecution(exchange, performance, trade_history)
 
+            if not trade_execution.check_exchange_connection():
+                logging.error("Exchange connection check failed")
+                raise ValueError("Exchange connection is not stable")
+
             # Get current day
             current_day = datetime.now().date()
 
@@ -2062,6 +2096,8 @@ def main(performance, trade_history):
             error_message = f'Error in main loop (attempt {retry_count}/{max_retries}): {str(e)}'
             logging.error(error_message)
             send_telegram_notification(error_message)
+
+            trade_execution.handle_trade_error(e, retry_count)
 
             if retry_count < max_retries:
                 logging.info(f"Waiting {recovery_delay} seconds before retry...")
