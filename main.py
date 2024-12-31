@@ -50,12 +50,44 @@ class TradeExecution:
         self.market_data = None
 
     def handle_trade_error(self, error, retry_count=3):
-        for i in range(retry_count):
-            try:
-                # Retry logic
-                time.sleep(2 ** i)  # Exponential backoff
-            except Exception as e:
-                logging.error(f"Retry {i+1} failed: {e}")
+        """Enhanced error handling for 24/7 operation"""
+        try:
+            for i in range(retry_count):
+                try:
+                    # Log error details
+                    logging.error(f"Trade error (attempt {i+1}/{retry_count}): {str(error)}")
+
+                    # Check if error is critical
+                    if any(critical in str(error).lower() for critical in [
+                        'insufficient balance',
+                        'api key',
+                        'permission denied',
+                        'margin'
+                    ]):
+                        logging.critical(f"Critical error detected: {str(error)}")
+                        self.send_notification(f"Critical Trading Error: {str(error)}")
+                        return False
+
+                    # Exponential backoff
+                    wait_time = 2 ** i
+                    logging.info(f"Waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
+
+                    # Check exchange connection
+                    if self.check_exchange_connection():
+                        logging.info("Exchange connection restored")
+                        return True
+
+                except Exception as e:
+                    logging.error(f"Error in retry attempt {i+1}: {str(e)}")
+
+            # If all retries failed
+            self.send_notification("Maximum retry attempts reached, manual intervention may be required")
+            return False
+
+        except Exception as e:
+            logging.error(f"Error in error handler: {str(e)}")
+            return False
 
     def check_exchange_connection(self):
         try:
@@ -182,11 +214,11 @@ class TradeExecution:
             send_telegram_notification(f"Failed to report balance: {str(e)}")
 
     def can_trade_time_based(self):
-        """Check time-based trading restrictions for 24/7 trading"""
+        """Enhanced 24/7 trading time validation"""
         try:
             now = datetime.now()
 
-            # Check minimum trade interval only
+            # Check minimum trade interval
             if self.trade_history:
                 last_trade = max(
                     (trade for trades in self.trade_history.values() for trade in trades),
@@ -196,23 +228,38 @@ class TradeExecution:
                 time_since_last_trade = (now - last_trade_time).total_seconds()
 
                 if time_since_last_trade < CONFIG['min_trade_interval']:
-                    logging.debug(f"Minimum trade interval not met. Time since last trade: {time_since_last_trade}s")
+                    logging.debug(f"Minimum trade interval not met. Waiting {CONFIG['min_trade_interval'] - time_since_last_trade}s")
                     return False
 
-            # Check if we have reached daily trade limits
+            # Check daily trade limits and profit target
             today_trades = [
                 trade for trades in self.trade_history.values()
                 for trade in trades
                 if trade['timestamp'].startswith(now.strftime('%Y-%m-%d'))
             ]
 
+            # Check daily trade count
             if len(today_trades) >= CONFIG['max_daily_trades']:
                 logging.info("Daily trade limit reached")
                 return False
 
-            # Check daily profit target
-            if self.check_daily_profit_target():
-                logging.info("Daily profit target reached")
+            # Calculate daily profit
+            today_profit = sum(trade.get('profit', 0) for trade in today_trades)
+            daily_profit_target = self.get_account_value() * (CONFIG['daily_profit_target'] / 100)
+
+            if today_profit >= daily_profit_target:
+                logging.info(f"Daily profit target reached: {today_profit:.2f} USDT")
+                # Send notification for reaching daily target
+                self.send_notification(f"Daily profit target reached: {today_profit:.2f} USDT")
+                return False
+
+            # Add consecutive loss protection
+            recent_trades = today_trades[-CONFIG['max_consecutive_losses']:]
+            consecutive_losses = sum(1 for trade in recent_trades if trade.get('profit', 0) < 0)
+
+            if consecutive_losses >= CONFIG['max_consecutive_losses']:
+                logging.warning(f"Maximum consecutive losses reached: {consecutive_losses}")
+                self.send_notification("Trading paused due to consecutive losses")
                 return False
 
             return True
@@ -222,27 +269,55 @@ class TradeExecution:
             return False
 
     def monitor_performance(self):
-        """Monitor trading performance metrics"""
+        """Enhanced 24/7 performance monitoring"""
         try:
-            # Calculate performance metrics
-            win_rate = self.performance.metrics['winning_trades'] / self.performance.metrics['total_trades']
-            profit_factor = abs(self.performance.metrics['total_profit']) / abs(self.performance.metrics['max_drawdown'])
+            # Calculate daily metrics
+            today = datetime.now().strftime('%Y-%m-%d')
+            today_trades = [
+                trade for trade in self.performance.metrics['trade_history']
+                if trade['timestamp'].startswith(today)
+            ]
+
+            # Daily statistics
+            total_trades = len(today_trades)
+            winning_trades = sum(1 for trade in today_trades if trade.get('profit', 0) > 0)
+            total_profit = sum(trade.get('profit', 0) for trade in today_trades)
+
+            # Calculate win rate and average profit
+            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+            avg_profit = total_profit / total_trades if total_trades > 0 else 0
 
             # Log performance metrics
-            logging.info(f"""
-            Performance Metrics:
-            Win Rate: {win_rate:.2%}
-            Profit Factor: {profit_factor:.2f}
-            Total Trades: {self.performance.metrics['total_trades']}
-            Max Drawdown: {self.performance.metrics['max_drawdown']:.2%}
-            """)
+            performance_msg = f"""
+            === Daily Performance Update ===
+            Total Trades: {total_trades}
+            Win Rate: {win_rate:.2f}%
+            Total Profit: {total_profit:.2f} USDT
+            Average Profit per Trade: {avg_profit:.2f} USDT
+            ==============================
+            """
+            logging.info(performance_msg)
 
-            # Alert if metrics are below thresholds
-            if win_rate < 0.4 or profit_factor < 1.5:
-                send_telegram_notification("Warning: Performance metrics below threshold")
+            # Send periodic performance update
+            if datetime.now().hour in [0, 8, 16]:  # Send updates every 8 hours
+                self.send_notification(performance_msg)
+
+            # Check for warning conditions
+            if win_rate < 40 and total_trades >= 5:
+                warning_msg = f"Warning: Low win rate ({win_rate:.2f}%) over {total_trades} trades"
+                logging.warning(warning_msg)
+                self.send_notification(warning_msg)
+
+            if total_profit < 0 and abs(total_profit) > CONFIG['max_daily_loss_percent']:
+                warning_msg = f"Warning: Approaching daily loss limit. Current loss: {abs(total_profit):.2f} USDT"
+                logging.warning(warning_msg)
+                self.send_notification(warning_msg)
+
+            return win_rate, total_profit
 
         except Exception as e:
             logging.error(f"Error monitoring performance: {str(e)}")
+            return None, None
 
     def validate_entry_conditions(self, market_data, amount_to_trade):
         """Validate entry conditions before trade execution"""
