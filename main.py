@@ -57,9 +57,15 @@ class TradeExecution:
                 return
 
             message = "Current Balances:\n"
-            for currency, data in balance.items():
-                if isinstance(data, dict) and data.get('total', 0) > 0:
-                    message += f"{currency}: {data['total']}\n"
+            for currency in ['ETH', 'USDT']:
+                if currency in balance and balance[currency]['total'] > 0:
+                    total = balance[currency]['total']
+                    free = balance[currency]['free']
+                    used = balance[currency]['used']
+                    message += f"{currency}:\n"
+                    message += f"  Total: {total:.8f}\n"
+                    message += f"  Free: {free:.8f}\n"
+                    message += f"  In Use: {used:.8f}\n"
 
             send_telegram_notification(message)
 
