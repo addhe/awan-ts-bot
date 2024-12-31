@@ -31,14 +31,7 @@ if API_KEY is None or API_SECRET is None:
     exit(1)
 
 def check_for_config_updates(last_checked_time):
-    config_path = '/path/to/your/config/config.json'
-    try:
-        last_modified_time = os.path.getmtime(config_path)
-        if last_modified_time > last_checked_time:
-            logging.info("Configuration file modified, updating CONFIG...")
-            return True, last_modified_time
-    except OSError as e:
-        logging.error(f"Cannot access configuration file: {str(e)}")
+    logging.info("Configuration updates are managed through code changes.")
     return False, last_checked_time
 
 def handle_exit_signal(signal_number, frame):
