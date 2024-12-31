@@ -48,6 +48,139 @@ class TradeExecution:
         self.performance = performance
         self.trade_history = trade_history
         self.market_data = None
+        self.active_positions = {}  # Untuk tracking posisi aktif
+        self.position_history = []  # Untuk tracking riwayat posisi
+
+        self.load_position()
+
+    def load_positions(self):
+        """Load existing positions from file"""
+        try:
+            position_file = 'active_positions.json'
+            if os.path.exists(position_file):
+                with open(position_file, 'r') as f:
+                    self.active_positions = json.load(f)
+                logging.info(f"Loaded {len(self.active_positions)} active positions")
+        except Exception as e:
+            logging.error(f"Error loading positions: {str(e)}")
+
+    def save_positions(self):
+        """Save active positions to file"""
+        try:
+            with open('active_positions.json', 'w') as f:
+                json.dump(self.active_positions, f)
+        except Exception as e:
+            logging.error(f"Error saving positions: {str(e)}")
+
+    def track_position(self, order, side):
+        """Track posisi baru"""
+        try:
+            position_info = {
+                'symbol': order['symbol'],
+                'entry_price': float(order['price']),
+                'amount': float(order['filled']),
+                'entry_time': datetime.now(),
+                'side': side,
+                'order_id': order['id'],
+                'take_profit': None,
+                'stop_loss': None
+            }
+
+            if side == 'buy':
+                # Set take profit dan stop loss
+                position_info['take_profit'] = position_info['entry_price'] * (1 + CONFIG['profit_target_percent'] / 100)
+                position_info['stop_loss'] = position_info['entry_price'] * (1 - CONFIG['stop_loss_percent'] / 100)
+
+                # Simpan ke active positions
+                self.active_positions[order['id']] = position_info
+
+                # Kirim notifikasi ke Telegram
+                message = f"""
+🟢 New Buy Position Opened:
+Symbol: {position_info['symbol']}
+Amount: {position_info['amount']} ETH
+Price: {position_info['entry_price']} USDT
+Take Profit: {position_info['take_profit']} USDT
+Stop Loss: {position_info['stop_loss']} USDT
+Time: {position_info['entry_time']}
+                """
+                send_telegram_notification(message)
+
+            elif side == 'sell':
+                # Catat profit/loss
+                for pos_id, pos in self.active_positions.items():
+                    if pos['symbol'] == order['symbol']:
+                        profit = (position_info['entry_price'] - pos['entry_price']) * position_info['amount']
+                        position_info['profit'] = profit
+
+                        # Kirim notifikasi ke Telegram
+                        message = f"""
+🔴 Position Closed:
+Symbol: {position_info['symbol']}
+Amount: {position_info['amount']} ETH
+Entry Price: {pos['entry_price']} USDT
+Exit Price: {position_info['entry_price']} USDT
+Profit: {profit:.2f} USDT
+Time Held: {position_info['entry_time'] - pos['entry_time']}
+                        """
+                        send_telegram_notification(message)
+
+                        # Pindahkan ke history dan hapus dari active
+                        self.position_history.append(position_info)
+                        del self.active_positions[pos_id]
+                        break
+
+            logging.info(f"Successfully tracked {side} position")
+            return position_info
+
+        except Exception as e:
+            logging.error(f"Error tracking position: {str(e)}")
+            return None
+
+    def check_existing_positions(self):
+        """Cek posisi yang ada dan kondisi exit"""
+        try:
+            current_price = float(self.exchange.fetch_ticker(CONFIG['symbol'])['last'])
+
+            for pos_id, position in list(self.active_positions.items()):
+                # Cek take profit
+                if current_price >= position['take_profit']:
+                    logging.info(f"Take profit triggered at {current_price}")
+                    self.execute_trade("sell", position['amount'], position['symbol'])
+                    continue
+
+                # Cek stop loss
+                if current_price <= position['stop_loss']:
+                    logging.info(f"Stop loss triggered at {current_price}")
+                    self.execute_trade("sell", position['amount'], position['symbol'])
+                    continue
+
+                # Update trailing stop jika harga naik
+                if current_price > position['entry_price']:
+                    new_stop = current_price * (1 - CONFIG['trailing_stop_percent'] / 100)
+                    if new_stop > position['stop_loss']:
+                        position['stop_loss'] = new_stop
+                        logging.info(f"Updated trailing stop to {new_stop}")
+
+                # Kirim update posisi setiap 4 jam
+                time_held = datetime.now() - position['entry_time']
+                if time_held.total_seconds() % 14400 < 60:  # Check setiap 4 jam
+                    unrealized_profit = (current_price - position['entry_price']) * position['amount']
+                    message = f"""
+📊 Position Update:
+Symbol: {position['symbol']}
+Current Price: {current_price} USDT
+Entry Price: {position['entry_price']} USDT
+Unrealized Profit: {unrealized_profit:.2f} USDT
+Time Held: {time_held}
+Stop Loss: {position['stop_loss']} USDT
+Take Profit: {position['take_profit']} USDT
+                    """
+                    send_telegram_notification(message)
+
+        except Exception as e:
+            logging.error(f"Error checking positions: {str(e)}")
+            send_telegram_notification(f"Error checking positions: {str(e)}")
 
     def handle_trade_error(self, error, retry_count=3):
         """Enhanced error handling for 24/7 operation"""
@@ -1272,14 +1405,7 @@ class TradeExecution:
             return None
 
     def execute_trade(self, side, amount, symbol):
-        """
-        Execute trade with enhanced error handling and order tracking
-
-        Args:
-            side (str): "buy" or "sell"
-            amount (float): Amount to trade
-            symbol (str): Trading pair symbol
-        """
+        """Execute trade with enhanced error handling and order tracking"""
         try:
             # Add exchange connection check
             if not self.check_exchange_connection():
@@ -1358,6 +1484,70 @@ class TradeExecution:
             send_telegram_notification(message)
         except Exception as e:
             logging.error(f"Failed to send notification: {str(e)}")
+
+    def get_position_status(self):
+        """Get current position status summary"""
+        try:
+            if not self.active_positions:
+                return "No active positions"
+
+            status = "Current Positions:\n"
+            for pos_id, pos in self.active_positions.items():
+                current_price = self.fetch_current_price(pos['symbol'])
+                if current_price:
+                    unrealized_profit = (current_price - pos['entry_price']) * pos['amount']
+                    time_held = datetime.now() - datetime.fromisoformat(pos['entry_time'])
+
+                    status += f"""
+Symbol: {pos['symbol']}
+Amount: {pos['amount']} ETH
+Entry Price: {pos['entry_price']} USDT
+Current Price: {current_price} USDT
+Unrealized Profit: {unrealized_profit:.2f} USDT
+Time Held: {time_held}
+Stop Loss: {pos['stop_loss']} USDT
+Take Profit: {pos['take_profit']} USDT
+                    """
+            return status
+        except Exception as e:
+            logging.error(f"Error getting position status: {str(e)}")
+            return "Error getting position status"
+
+    def update_positions(self):
+        """Update and monitor all active positions"""
+        try:
+            for pos_id, position in list(self.active_positions.items()):
+                current_price = self.fetch_current_price(position['symbol'])
+                if not current_price:
+                    continue
+
+                # Check take profit
+                if current_price >= position['take_profit']:
+                    self.execute_trade("sell", position['amount'], position['symbol'])
+                    continue
+
+                # Check stop loss
+                if current_price <= position['stop_loss']:
+                    self.execute_trade("sell", position['amount'], position['symbol'])
+                    continue
+
+                # Update trailing stop
+                if current_price > position['entry_price']:
+                    new_stop = current_price * (1 - CONFIG['trailing_stop_percent'] / 100)
+                    if new_stop > position['stop_loss']:
+                        position['stop_loss'] = new_stop
+                        self.save_positions()
+                        logging.info(f"Updated trailing stop to {new_stop}")
+
+                # Periodic status update (every 4 hours)
+                entry_time = datetime.fromisoformat(position['entry_time'])
+                time_held = datetime.now() - entry_time
+                if time_held.total_seconds() % 14400 < 60:  # Every 4 hours
+                    status = self.get_position_status()
+                    self.send_notification(status)
+
+        except Exception as e:
+            logging.error(f"Error updating positions: {str(e)}")
 
     def check_for_sell_signal(self, symbol, current_price):
         eth_balance = safe_api_call(self.exchange.fetch_balance)[symbol.split('/')[0]]['free']
