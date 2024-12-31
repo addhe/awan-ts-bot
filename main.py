@@ -51,7 +51,7 @@ class TradeExecution:
         self.active_positions = {}  # Untuk tracking posisi aktif
         self.position_history = []  # Untuk tracking riwayat posisi
 
-        self.load_position()
+        self.load_positions()
 
     def load_positions(self):
         """Load existing positions from file"""
@@ -61,8 +61,93 @@ class TradeExecution:
                 with open(position_file, 'r') as f:
                     self.active_positions = json.load(f)
                 logging.info(f"Loaded {len(self.active_positions)} active positions")
+                # Validate loaded positions
+                for pos_id, pos in list(self.active_positions.items()):
+                    if not self.validate_loaded_position(pos):
+                        del self.active_positions[pos_id]
+                        logging.warning(f"Removed invalid position: {pos_id}")
         except Exception as e:
             logging.error(f"Error loading positions: {str(e)}")
+
+    def log_position_details(self, position, status="Active"):
+        """Log detailed position information"""
+        try:
+            current_price = self.fetch_current_price(position['symbol'])
+            if current_price:
+                unrealized_pnl = (current_price - position['entry_price']) * position['amount']
+                time_held = datetime.now() - datetime.fromisoformat(position['entry_time'])
+
+                log_msg = f"""
+    Position Details ({status}):
+    Symbol: {position['symbol']}
+    Side: {position['side']}
+    Amount: {position['amount']:.8f}
+    Entry Price: {position['entry_price']:.2f}
+    Current Price: {current_price:.2f}
+    Take Profit: {position['take_profit']:.2f}
+    Stop Loss: {position['stop_loss']:.2f}
+    Unrealized P/L: {unrealized_pnl:.2f} USDT
+    Time Held: {str(time_held)}
+                """
+                logging.info(log_msg)
+
+                # Log to telegram if significant change
+                if abs(unrealized_pnl) > CONFIG['min_profit_threshold']:
+                    self.send_notification(log_msg)
+
+        except Exception as e:
+            logging.error(f"Error logging position details: {str(e)}")
+
+    def handle_position_file_error(self):
+        """Handle corrupted position file"""
+        try:
+            backup_file = 'active_positions.json.bak'
+            position_file = 'active_positions.json'
+
+            # Create backup if original exists
+            if os.path.exists(position_file):
+                os.rename(position_file, backup_file)
+                logging.warning("Created backup of corrupted position file")
+
+            # Reset positions
+            self.active_positions = {}
+            self.save_positions()
+
+            # Send notification
+            self.send_notification("⚠️ Position file was corrupted and has been reset. Please check trades manually.")
+
+        except Exception as e:
+            logging.error(f"Error handling position file: {str(e)}")
+
+    def validate_loaded_position(self, position):
+        """Validate loaded position data"""
+        required_fields = [
+            'symbol', 'entry_price', 'amount', 'entry_time',
+            'side', 'order_id', 'take_profit', 'stop_loss'
+        ]
+
+        try:
+            # Check all required fields exist
+            if not all(field in position for field in required_fields):
+                return False
+
+            # Validate numeric values
+            if not all(isinstance(position[field], (int, float))
+                      for field in ['entry_price', 'amount', 'take_profit', 'stop_loss']):
+                return False
+
+            # Validate entry time
+            datetime.fromisoformat(position['entry_time'])
+
+            # Validate symbol matches current trading pair
+            if position['symbol'] != CONFIG['symbol']:
+                return False
+
+            return True
+
+        except Exception as e:
+            logging.error(f"Error validating position: {str(e)}")
+            return False
 
     def save_positions(self):
         """Save active positions to file"""
@@ -1549,7 +1634,10 @@ Take Profit: {position['take_profit']} USDT
 
     def send_notification(self, message):
         try:
-            send_telegram_notification(message)
+            # Menambahkan timestamp ke pesan
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            formatted_message = f"[{timestamp}]\n{message}"
+            send_telegram_notification(formatted_message)
         except Exception as e:
             logging.error(f"Failed to send notification: {str(e)}")
 
