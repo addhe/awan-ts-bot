@@ -42,7 +42,7 @@ CONFIG = {
     'rsi_oversold': 25,
     'adx_threshold': 15,
     'momentum_threshold': 0,
-    'trend_strength_threshold': 0.0005,
+    'trend_strength_threshold': 0.0002,
 
     'min_candles_required': 100,
     'cleanup_timeout': 30,
@@ -77,4 +77,9 @@ CONFIG = {
 
     'min_trade_amount': 0.004,
     'min_order_value': 11.0,
+    'momentum_lookback': 5,
+    'momentum_threshold': 0.0001,
+
+    'trend_lookback': 5,
+    'trend_threshold': 0.0001,
 }

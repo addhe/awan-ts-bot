@@ -509,6 +509,10 @@ class TradeExecution:
 
             # 4. Trend Strength Analysis
             trend_strength = self.calculate_trend_strength(market_data)
+            logging.info(f"Trend Analysis Details:")
+            logging.info(f"- Current Trend Strength: {trend_strength:.6f}")
+            logging.info(f"- Threshold: {CONFIG['trend_strength_threshold']}")
+
             if trend_strength < CONFIG['trend_strength_threshold']:
                 conditions_report["trend_strength"] = False
                 logging.info(f"❌ Weak trend strength: {trend_strength:.4f}")
@@ -550,9 +554,40 @@ class TradeExecution:
             # EMA trend strength
             ema_short = self.calculate_ema(market_data, CONFIG['ema_short_period'])
             ema_long = self.calculate_ema(market_data, CONFIG['ema_long_period'])
-            trend_strength = abs(ema_short.iloc[-1] - ema_long.iloc[-1]) / ema_long.iloc[-1]
 
-            return trend_strength
+            # Calculate basic trend strength from EMAs
+            basic_trend_strength = abs(ema_short.iloc[-1] - ema_long.iloc[-1]) / ema_long.iloc[-1]
+
+            # Add momentum component
+            price_momentum = market_data['close'].pct_change(5).mean()  # 5-period momentum
+
+            # Add RSI directional component
+            rsi = self.analyze_price_trend(market_data)['rsi']
+            rsi_factor = abs(50 - rsi) / 50  # How far RSI is from neutral (50)
+
+            # Calculate volume trend
+            volume_sma = market_data['volume'].rolling(window=10).mean()
+            volume_trend = (market_data['volume'].iloc[-1] / volume_sma.iloc[-1]) - 1
+
+            # Combine all components
+            combined_strength = (
+                basic_trend_strength * 0.4 +  # 40% weight to EMA trend
+                abs(price_momentum) * 0.3 +   # 30% weight to momentum
+                rsi_factor * 0.2 +            # 20% weight to RSI
+                abs(volume_trend) * 0.1       # 10% weight to volume trend
+            )
+
+            logging.debug(f"""
+            Trend Strength Components:
+            Basic Trend: {basic_trend_strength:.6f}
+            Momentum: {price_momentum:.6f}
+            RSI Factor: {rsi_factor:.6f}
+            Volume Trend: {volume_trend:.6f}
+            Combined: {combined_strength:.6f}
+            """)
+
+            return combined_strength
+
         except Exception as e:
             logging.error(f"Error calculating trend strength: {str(e)}")
             return 0
