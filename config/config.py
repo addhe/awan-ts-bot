@@ -71,4 +71,18 @@ CONFIG = {
     'position_max_duration': 24 * 60 * 60,  # Maximum position duration in seconds
     'min_notional_value': 10,  # Minimum trade value in USDT
     'max_notional_value': 1000,  # Maximum trade value in USDT
+
+    'max_consecutive_losses': 3,  # Maximum consecutive losing trades
+    'daily_profit_target': 5.0,   # Daily profit target in percentage
+    'market_impact_threshold': 0.02,  # Maximum allowed market impact
+    'position_sizing_atr_multiplier': 1.5,  # Position sizing based on ATR
+    'max_open_orders': 5,  # Maximum number of open orders
+    'min_liquidity_ratio': 0.1,  # Minimum ratio of order size to average volume
+
+    'min_trade_interval': 60,      # Minimum time between trades (seconds)
+    'max_position_loss_percent': 2.0,  # Maximum loss per position in percentage
+    'min_profit_threshold': 0.2,   # Minimum profit threshold for trades
+    'price_precision': 8,          # Price precision for orders
+    'amount_precision': 8,         # Amount precision for orders
+    'order_timeout': 60,           # Timeout for order execution in seconds
 }

@@ -49,6 +49,188 @@ class TradeExecution:
         self.trade_history = trade_history
         self.market_data = None
 
+    def can_trade_time_based(self):
+        """Check time-based trading restrictions for 24/7 trading"""
+        try:
+            now = datetime.now()
+
+            # Check minimum trade interval only
+            if self.trade_history:
+                last_trade = max(
+                    (trade for trades in self.trade_history.values() for trade in trades),
+                    key=lambda x: x['timestamp']
+                )
+                last_trade_time = datetime.fromisoformat(last_trade['timestamp'])
+                time_since_last_trade = (now - last_trade_time).total_seconds()
+
+                if time_since_last_trade < CONFIG['min_trade_interval']:
+                    logging.debug(f"Minimum trade interval not met. Time since last trade: {time_since_last_trade}s")
+                    return False
+
+            # Check if we have reached daily trade limits
+            today_trades = [
+                trade for trades in self.trade_history.values()
+                for trade in trades
+                if trade['timestamp'].startswith(now.strftime('%Y-%m-%d'))
+            ]
+
+            if len(today_trades) >= CONFIG['max_daily_trades']:
+                logging.info("Daily trade limit reached")
+                return False
+
+            # Check daily profit target
+            if self.check_daily_profit_target():
+                logging.info("Daily profit target reached")
+                return False
+
+            return True
+
+        except Exception as e:
+            logging.error(f"Error checking time-based restrictions: {str(e)}")
+            return False
+
+    def monitor_performance(self):
+        """Monitor trading performance metrics"""
+        try:
+            # Calculate performance metrics
+            win_rate = self.performance.metrics['winning_trades'] / self.performance.metrics['total_trades']
+            profit_factor = abs(self.performance.metrics['total_profit']) / abs(self.performance.metrics['max_drawdown'])
+
+            # Log performance metrics
+            logging.info(f"""
+            Performance Metrics:
+            Win Rate: {win_rate:.2%}
+            Profit Factor: {profit_factor:.2f}
+            Total Trades: {self.performance.metrics['total_trades']}
+            Max Drawdown: {self.performance.metrics['max_drawdown']:.2%}
+            """)
+
+            # Alert if metrics are below thresholds
+            if win_rate < 0.4 or profit_factor < 1.5:
+                send_telegram_notification("Warning: Performance metrics below threshold")
+
+        except Exception as e:
+            logging.error(f"Error monitoring performance: {str(e)}")
+
+    def validate_entry_conditions(self, market_data, amount_to_trade):
+        """Validate entry conditions before trade execution"""
+        try:
+            # Add current price validation
+            if 'close' not in market_data.columns:
+                logging.error("Missing close price data")
+                return False
+
+            current_price = market_data['close'].iloc[-1]
+            if current_price <= 0:
+                logging.error("Invalid current price")
+                return False
+
+            # Calculate average volume with error handling
+            try:
+                avg_volume = market_data['volume'].rolling(window=20).mean().iloc[-1]
+            except Exception as e:
+                logging.error(f"Error calculating average volume: {str(e)}")
+                return False
+
+            # Calculate market impact with safeguards
+            try:
+                market_impact = (amount_to_trade * current_price) / (avg_volume * current_price)
+                logging.info(f"Market impact: {market_impact:.4%}")
+
+                if market_impact > CONFIG['market_impact_threshold']:
+                    logging.warning(f"Market impact too high: {market_impact:.4%}")
+                    return False
+            except ZeroDivisionError:
+                logging.error("Zero average volume detected")
+                return False
+
+            # Enhanced liquidity check
+            try:
+                liquidity_ratio = amount_to_trade / avg_volume
+                logging.info(f"Liquidity ratio: {liquidity_ratio:.4%}")
+
+                if liquidity_ratio > CONFIG['min_liquidity_ratio']:
+                    logging.warning(f"Order size too large compared to average volume. Ratio: {liquidity_ratio:.4%}")
+                    return False
+            except ZeroDivisionError:
+                logging.error("Zero average volume in liquidity check")
+                return False
+
+            # Enhanced consecutive losses check with safeguards
+            try:
+                if CONFIG['symbol'] not in self.trade_history:
+                    recent_trades = []
+                else:
+                    recent_trades = self.trade_history[CONFIG['symbol']][-CONFIG['max_consecutive_losses']:]
+
+                consecutive_losses = sum(1 for trade in recent_trades if trade.get('profit', 0) < 0)
+
+                if consecutive_losses >= CONFIG['max_consecutive_losses']:
+                    logging.warning(f"Maximum consecutive losses reached: {consecutive_losses}")
+                    return False
+
+                logging.info(f"Current consecutive losses: {consecutive_losses}")
+            except Exception as e:
+                logging.error(f"Error checking consecutive losses: {str(e)}")
+                return False
+
+            # Additional validation checks
+            if not self.validate_time_window():
+                return False
+
+            if not self.validate_market_volatility(market_data):
+                return False
+
+            logging.info("All entry conditions validated successfully")
+            return True
+
+        except Exception as e:
+            logging.error(f"Error validating entry conditions: {str(e)}")
+            return False
+
+    def validate_time_window(self):
+        """Validate if enough time has passed since last trade"""
+        try:
+            if not self.trade_history.get(CONFIG['symbol']):
+                return True
+
+            last_trade = self.trade_history[CONFIG['symbol']][-1]
+            last_trade_time = datetime.fromisoformat(last_trade['timestamp'])
+            time_since_last_trade = (datetime.now() - last_trade_time).total_seconds()
+
+            if time_since_last_trade < CONFIG['min_trade_interval']:
+                logging.info(f"Minimum trade interval not met. Time since last trade: {time_since_last_trade}s")
+                return False
+
+            return True
+        except Exception as e:
+            logging.error(f"Error validating time window: {str(e)}")
+            return False
+
+    def validate_market_volatility(self, market_data):
+        """Validate if market volatility is within acceptable range"""
+        try:
+            # Calculate current volatility
+            volatility = self.calculate_volatility(market_data)
+            if volatility is None:
+                return False
+
+            logging.info(f"Current market volatility: {volatility:.4%}")
+
+            # Check against thresholds
+            if volatility > CONFIG['high_volatility_threshold']:
+                logging.warning(f"Volatility too high: {volatility:.4%}")
+                return False
+
+            if volatility < CONFIG['low_volatility_threshold']:
+                logging.warning(f"Volatility too low: {volatility:.4%}")
+                return False
+
+            return True
+        except Exception as e:
+            logging.error(f"Error validating market volatility: {str(e)}")
+            return False
+
     def setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown"""
         try:
@@ -83,6 +265,52 @@ class TradeExecution:
             return position_size > 0
         except Exception as e:
             logging.error(f"Error checking open positions: {str(e)}")
+            return False
+
+    def check_daily_profit_target(self):
+        """Check if daily profit target is reached"""
+        try:
+            today = datetime.now().strftime('%Y-%m-%d')
+            today_trades = [
+                trade for trade in self.performance.metrics['trade_history']
+                if trade['timestamp'].startswith(today)
+            ]
+
+            daily_profit = sum(trade['profit'] for trade in today_trades)
+            daily_profit_percent = (daily_profit / self.performance.metrics['total_profit']) * 100
+
+            if daily_profit_percent >= CONFIG['daily_profit_target']:
+                logging.info(f"Daily profit target reached: {daily_profit_percent:.2f}%")
+                return True
+
+            return False
+
+        except Exception as e:
+            logging.error(f"Error checking daily profit target: {str(e)}")
+            return False
+
+    def check_technical_exit_signals(self, market_data):
+        """Check technical indicators for exit signals"""
+        try:
+            # Get latest technical analysis
+            analysis = self.perform_technical_analysis(market_data)
+            if analysis is None:
+                return False
+
+            trend = analysis['trend_analysis']
+
+            # Exit conditions
+            exit_signals = (
+                trend['rsi'] > CONFIG['rsi_overbought'] or
+                trend['adx'] < CONFIG['adx_threshold'] or
+                trend['momentum'] < 0 or
+                trend['trend_strength'] < CONFIG['trend_strength_threshold']
+            )
+
+            return exit_signals
+
+        except Exception as e:
+            logging.error(f"Error checking technical exit signals: {str(e)}")
             return False
 
     def should_exit_position(self, position, current_price, market_data):
@@ -165,6 +393,14 @@ class TradeExecution:
             # Close exchange connection if available
             if hasattr(self.exchange, 'close'):
                 self.exchange.close()
+
+            # Clear market data
+            if hasattr(self, 'market_data'):
+                del self.market_data
+
+            # Clear large objects
+            import gc
+            gc.collect()
 
             logging.info("Cleanup completed successfully")
         except Exception as e:
@@ -293,6 +529,17 @@ class TradeExecution:
     def execute_trade_with_safety(self, side, amount, symbol, current_price):
         """Execute trade with additional safety checks"""
         try:
+            # Check open orders count
+            open_orders = safe_api_call(self.exchange.fetch_open_orders, symbol)
+            if len(open_orders) >= CONFIG['max_open_orders']:
+                logging.warning("Maximum open orders reached")
+                return False
+
+            # Check daily profit target
+            if self.check_daily_profit_target():
+                logging.info("Daily profit target reached, skipping trade")
+                return False
+
             # Pre-trade validation
             if not self.validate_trading_conditions(self.market_data):
                 return False
@@ -309,6 +556,9 @@ class TradeExecution:
                 position_size=amount,
                 order=order
             )
+
+            # Monitor performance after trade
+            self.monitor_performance()
 
             return True
 
@@ -633,7 +883,7 @@ class TradeExecution:
 
     def execute_trade(self, side, amount, symbol):
         """
-        Execute trade with performance tracking and trade history recording
+        Execute trade with enhanced error handling and order tracking
 
         Args:
             side (str): "buy" or "sell"
@@ -641,10 +891,12 @@ class TradeExecution:
             symbol (str): Trading pair symbol
         """
         try:
+            start_time = time.time()
+
             # Validate market conditions first
             if not self.validate_market_conditions(self.market_data):
                 logging.warning(f"Market conditions not met for {symbol}, skipping trade")
-                return
+                return None
 
             # Get current balance
             balance = safe_api_call(self.exchange.fetch_balance)
@@ -654,71 +906,56 @@ class TradeExecution:
             # Validate balance for sell orders
             if side == "sell" and base_balance < amount:
                 logging.warning(f"Insufficient balance for selling {base_currency}. Available: {base_balance}, Required: {amount}")
-                return
+                return None
 
-            # Adjust position size based on volatility
-            adjusted_amount = self.manage_position_size(amount)
-            current_price = self.market_data['close'].iloc[-1]
-            stop_loss = self.calculate_stop_loss(current_price)
-            take_profit = current_price * (1 + CONFIG['profit_target_percent'] / 100)
+            # Execute order with timeout check
+            while time.time() - start_time < CONFIG['order_timeout']:
+                try:
+                    # Place the order
+                    if side == "buy":
+                        order = self.exchange.create_market_buy_order(symbol, amount)
+                    else:
+                        order = self.exchange.create_market_sell_order(symbol, amount)
 
-            # Validate risk-reward
-            if not self.validate_risk_reward(current_price, stop_loss, take_profit):
-                logging.warning(f"Trade doesn't meet risk-reward criteria: {symbol}")
-                return
+                    # Check if order is filled
+                    if order['status'] == 'closed':
+                        # Update trade history
+                        order_info = {
+                            'timestamp': datetime.now().isoformat(),
+                            'symbol': symbol,
+                            'side': side,
+                            'amount': amount,
+                            'price': float(order['price']),
+                            'order_id': order['id']
+                        }
 
-            # Execute the order
-            try:
-                if side == "buy":
-                    order = self.exchange.create_market_buy_order(symbol, adjusted_amount)
-                else:
-                    order = self.exchange.create_market_sell_order(symbol, adjusted_amount)
+                        if symbol not in self.trade_history:
+                            self.trade_history[symbol] = []
+                        self.trade_history[symbol].append(order_info)
 
-                order_info = {
-                    'timestamp': datetime.now().isoformat(),
-                    'symbol': symbol,
-                    'side': side,
-                    'amount': adjusted_amount,
-                    'price': current_price,
-                    'stop_loss': stop_loss,
-                    'take_profit': take_profit
-                }
+                        # Log and notify
+                        logging.info(f"Executed {side} order: {order}")
+                        self.send_notification(
+                            f"Executed {side} order:\n"
+                            f"Symbol: {symbol}\n"
+                            f"Amount: {amount}\n"
+                            f"Price: {order['price']}"
+                        )
 
-                # Update trade history
-                if symbol not in self.trade_history:
-                    self.trade_history[symbol] = []
-                self.trade_history[symbol].append(order_info)
+                        return order
 
-                # Calculate and update performance metrics
-                profit = self.calculate_profit(order)
-                won = profit > 0
-                self.performance.update_trade(profit, won)
+                    time.sleep(1)  # Wait before checking again
 
-                # Log and notify
-                logging.info(f"Executed {side} order: {order}")
-                self.send_notification(
-                    f"Executed {side} order:\n"
-                    f"Symbol: {symbol}\n"
-                    f"Amount: {adjusted_amount}\n"
-                    f"Price: {current_price}\n"
-                    f"Stop Loss: {stop_loss}\n"
-                    f"Take Profit: {take_profit}"
-                )
+                except Exception as e:
+                    logging.error(f"Order execution error: {str(e)}")
+                    return None
 
-                # Implement trailing stop and take profits
-                if side == "buy":
-                    self.implement_trailing_stop(current_price, current_price, adjusted_amount)
-                    self.implement_partial_take_profits(current_price, adjusted_amount)
-
-            except Exception as e:
-                error_msg = f"Failed to execute {side} order: {str(e)}"
-                logging.error(error_msg)
-                self.send_notification(error_msg)
+            logging.error(f"Order timeout after {CONFIG['order_timeout']} seconds")
+            return None
 
         except Exception as e:
-            error_msg = f"Error in execute_trade: {str(e)}"
-            logging.error(error_msg)
-            self.send_notification(error_msg)
+            logging.error(f"Error in execute_trade: {str(e)}")
+            return None
 
     def send_notification(self, message):
         try:
@@ -813,6 +1050,21 @@ class TradeExecution:
     def validate_market_conditions(self, market_data):
         """Enhanced market conditions validation"""
         try:
+            # Add detailed market data logging
+            logging.debug(f"""
+            Market Conditions:
+            Price: {market_data['close'].iloc[-1]}
+            Volume: {market_data['volume'].iloc[-1]}
+            EMA Short: {market_data['ema_short'].iloc[-1] if 'ema_short' in market_data else 'N/A'}
+            EMA Long: {market_data['ema_long'].iloc[-1] if 'ema_long' in market_data else 'N/A'}
+            RSI: {self.analyze_price_trend(market_data)['rsi'] if market_data is not None else 'N/A'}
+            """)
+
+            # Market health check
+            if not self.check_market_health():
+                logging.debug("Failed market health check")
+                return False
+
             # 1. Check spread
             if not self.check_spread(market_data):
                 logging.debug("Failed spread check")
@@ -1344,8 +1596,27 @@ def validate_config():
         if CONFIG['stop_loss_percent'] < 0:
             raise ValueError("Stop loss percent should not be negative.")
 
+        if CONFIG['max_consecutive_losses'] <= 0:
+            raise ValueError("max_consecutive_losses must be positive")
+
+        if CONFIG['daily_profit_target'] <= 0:
+            raise ValueError("daily_profit_target must be positive")
+
+        if CONFIG['market_impact_threshold'] <= 0:
+            raise ValueError("market_impact_threshold must be positive")
+
+        if CONFIG['position_sizing_atr_multiplier'] <= 0:
+            raise ValueError("position_sizing_atr_multiplier must be positive")
+
+        if CONFIG['max_open_orders'] <= 0:
+            raise ValueError("max_open_orders must be positive")
+
+        if not (0 < CONFIG['min_liquidity_ratio'] <= 1):
+            raise ValueError("min_liquidity_ratio must be between 0 and 1")
+
         logging.info("Config validation passed")
         return True
+
     except Exception as e:
         logging.error(f"Config validation failed: {e}")
         return False
@@ -1386,113 +1657,125 @@ def get_min_trade_amount_and_notional(exchange, symbol):
         return None, None
 
 def main(performance, trade_history):
-    """
-    Main trading execution loop with enhanced validation and safety checks
-    """
-    try:
-        # Initialize exchange and trade execution
-        exchange = initialize_exchange()
-        if exchange is None:
-            raise ValueError("Exchange initialization failed")
+    recovery_delay = 60  # seconds
+    max_retries = 3
+    retry_count = 0
 
-        symbol_base = CONFIG['symbol'].split('/')[0]
-        trade_execution = TradeExecution(exchange, performance, trade_history)
+    while retry_count < max_retries:
+        try:
+            # Initialize exchange and trade execution
+            exchange = initialize_exchange()
+            if exchange is None:
+                raise ValueError("Exchange initialization failed")
 
-        # Setup proper signal handling
-        trade_execution.setup_signal_handlers()
+            symbol_base = CONFIG['symbol'].split('/')[0]
+            trade_execution = TradeExecution(exchange, performance, trade_history)
 
-        # Configuration validation
-        global last_checked_time
-        config_update, last_checked_time = check_for_config_updates(last_checked_time)
-        if config_update or not validate_config():
-            logging.error("Configuration validation failed")
-            return
+            # Add time-based check
+            if not trade_execution.can_trade_time_based():
+                logging.info("Time-based trading restrictions in effect")
+                return
 
-        # Performance checks
-        if not performance.can_trade():
-            logging.info("Trading limits reached, skipping trading cycle")
-            return
+            # Setup proper signal handling
+            trade_execution.setup_signal_handlers()
 
-        # Balance validation
-        balance = safe_api_call(exchange.fetch_balance)
-        if balance is None:
-            raise ValueError("Failed to fetch balance")
+            # Configuration validation
+            global last_checked_time
+            config_update, last_checked_time = check_for_config_updates(last_checked_time)
+            if config_update or not validate_config():
+                logging.error("Configuration validation failed")
+                return
 
-        usdt_balance = balance['USDT']['free']
-        if usdt_balance < CONFIG['min_balance']:
-            logging.warning(f"Insufficient balance: {usdt_balance} USDT")
-            return
+            # Performance checks
+            if not performance.can_trade():
+                logging.info("Trading limits reached, skipping trading cycle")
+                return
 
-        # Market data fetching and validation
-        market_data = trade_execution.fetch_market_data(CONFIG['symbol'], CONFIG['timeframe'])
-        if not trade_execution.validate_market_data(market_data):
-            logging.error("Invalid market data structure")
-            return
+            # Balance validation
+            balance = safe_api_call(exchange.fetch_balance)
+            if balance is None:
+                raise ValueError("Failed to fetch balance")
 
-        trade_execution.market_data = market_data
+            usdt_balance = balance['USDT']['free']
+            if usdt_balance < CONFIG['min_balance']:
+                logging.warning(f"Insufficient balance: {usdt_balance} USDT")
+                return
 
-        # Comprehensive trading conditions validation
-        if not trade_execution.validate_trading_conditions(market_data):
-            logging.info(f"Trading conditions not met for {CONFIG['symbol']}")
-            return
+            # Market data fetching and validation
+            market_data = trade_execution.fetch_market_data(CONFIG['symbol'], CONFIG['timeframe'])
+            if not trade_execution.validate_market_data(market_data):
+                logging.error("Invalid market data structure")
+                return
 
-        # Position sizing and validation
-        current_price = market_data['close'].iloc[-1]
-        position_sizing_result = trade_execution.calculate_position_size(
-            balance=usdt_balance,
-            current_price=current_price,
-            market_data=market_data
-        )
+            trade_execution.market_data = market_data
 
-        if position_sizing_result is None:
-            logging.warning("Failed to calculate valid position size")
-            return
+            # Comprehensive trading conditions validation
+            if not trade_execution.validate_trading_conditions(market_data):
+                logging.info(f"Trading conditions not met for {CONFIG['symbol']}")
+                return
 
-        optimal_position, amount_to_trade_formatted = position_sizing_result
-
-        # Technical analysis
-        analysis_result = trade_execution.perform_technical_analysis(market_data)
-        if analysis_result is None:
-            logging.error("Failed to perform technical analysis")
-            return
-
-        # Check existing positions and manage them
-        if trade_execution.has_open_positions(CONFIG['symbol']):
-            trade_execution.manage_existing_positions(
-                symbol=CONFIG['symbol'],
+            # Position sizing and validation
+            current_price = market_data['close'].iloc[-1]
+            position_sizing_result = trade_execution.calculate_position_size(
+                balance=usdt_balance,
                 current_price=current_price,
                 market_data=market_data
             )
 
-        # Process trading signals
-        if trade_execution.should_execute_trade(analysis_result, market_data):
-            trade_execution.execute_trade_with_safety(
-                side="buy",
-                amount=amount_to_trade_formatted,
-                symbol=CONFIG['symbol'],
-                current_price=current_price
-            )
+            if position_sizing_result is None:
+                logging.warning("Failed to calculate valid position size")
+                return
 
-        # Log trading metrics
-        trade_execution.log_trading_metrics(
-            symbol_base=symbol_base,
-            optimal_position=optimal_position,
-            amount_to_trade=amount_to_trade_formatted,
-            current_price=current_price
-        )
+            optimal_position, amount_to_trade_formatted = position_sizing_result
+            if trade_execution.validate_entry_conditions(market_data, amount_to_trade_formatted):
 
-    except Exception as e:
-        error_message = f'Critical error in main loop: {str(e)}\n{traceback.format_exc()}'
-        logging.error(error_message)
-        send_telegram_notification(error_message)
+                # Technical analysis
+                analysis_result = trade_execution.perform_technical_analysis(market_data)
+                if analysis_result is None:
+                    logging.error("Failed to perform technical analysis")
+                    return
 
-    finally:
-        # Ensure proper cleanup
-        try:
-            trade_execution.cleanup()
-        except Exception as cleanup_error:
-            logging.error(f"Error during cleanup: {str(cleanup_error)}")
+                # Check existing positions and manage them
+                if trade_execution.has_open_positions(CONFIG['symbol']):
+                    trade_execution.manage_existing_positions(
+                        symbol=CONFIG['symbol'],
+                        current_price=current_price,
+                        market_data=market_data
+                    )
 
+                # Process trading signals
+                if trade_execution.should_execute_trade(analysis_result, market_data):
+                    trade_execution.execute_trade_with_safety(
+                        side="buy",
+                        amount=amount_to_trade_formatted,
+                        symbol=CONFIG['symbol'],
+                        current_price=current_price
+                    )
+
+                # Log trading metrics
+                trade_execution.log_trading_metrics(
+                    symbol_base=symbol_base,
+                    optimal_position=optimal_position,
+                    amount_to_trade=amount_to_trade_formatted,
+                    current_price=current_price
+                )
+
+        except Exception as e:
+            retry_count += 1
+            error_message = f'Error in main loop (attempt {retry_count}/{max_retries}): {str(e)}'
+            logging.error(error_message)
+            send_telegram_notification(error_message)
+
+            if retry_count < max_retries:
+                logging.info(f"Waiting {recovery_delay} seconds before retry...")
+                time.sleep(recovery_delay)
+                recovery_delay *= 2  # Exponential backoff
+        finally:
+            # Enhanced cleanup
+            try:
+                trade_execution.cleanup()
+            except Exception as cleanup_error:
+                logging.error(f"Error during cleanup: {str(cleanup_error)}")
 
 if __name__ == '__main__':
     performance = PerformanceMetrics()
