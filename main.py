@@ -42,12 +42,6 @@ def handle_exit_signal(signal_number, frame):
 signal.signal(signal.SIGTERM, handle_exit_signal)
 signal.signal(signal.SIGINT, handle_exit_signal)
 
-def load_config():
-    with open('/path/to/your/config/config.json') as f:
-        return json.load(f)
-
-CONFIG = load_config()
-
 class TradeExecution:
     def __init__(self, exchange, performance, trade_history):
         self.exchange = exchange
@@ -515,7 +509,7 @@ class TradeExecution:
 
     @staticmethod
     def calculate_ema(df, period, column='close'):
-        return df[column].ewm(span=period, adjust=False).mean()
+        return df[column].ewm(span=period, adjust=False).mean
 
     @staticmethod
     def validate_ema_strategy(config):
@@ -788,6 +782,7 @@ def validate_config():
 
         if CONFIG['max_daily_trades'] <= 0:
             raise ValueError("Max daily trades should be positive.")
+
         if CONFIG['stop_loss_percent'] < 0:
             raise ValueError("Stop loss percent should not be negative.")
 
@@ -846,7 +841,7 @@ def main(performance, trade_history):
         global last_checked_time
         config_update, last_checked_time = check_for_config_updates(last_checked_time)
         if config_update:
-            CONFIG = load_config()
+            check_for_config_updates()
             logging.info("Configuration updated, reloading...")
 
         if not validate_config():
