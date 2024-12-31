@@ -116,12 +116,21 @@ class TradeExecution:
             logging.error("Historical data is empty or None")
             return False
 
-        average_price = historical_data['close'].mean()
-        target_price = average_price * (1 + CONFIG['profit_target_percent'] / 100)
+        # Calculate sell target taking into account the required profit margin
+        latest_price = historical_data['close'].iloc[-1]
+        target_price = latest_price * (1 + CONFIG['profit_target_percent'] / 100)
 
-        logging.info(f"Current price: {current_price}, Target price for selling: {target_price}")
+        # Ensure profitability after fees
+        profit_margin = target_price - latest_price
+        fee_estimate = current_price * CONFIG['fee_rate']
 
-        return current_price >= target_price
+        logging.info(f"Current price: {current_price}, Target price for selling: {target_price}, Fee estimate: {fee_estimate}")
+
+        # Subtract fees to see if profitability is meaningful
+        net_profit = profit_margin - fee_estimate
+        logging.info(f"Net profit after fee: {net_profit}")
+
+        return net_profit > 0
 
     def analyze_historical_data(self, symbol, timeframe='1h', limit=100):
         try:
@@ -182,7 +191,7 @@ class TradeExecution:
             return 0
 
     def calculate_profit(self, order):
-        """Calculate profit for the trade"""
+        """Calculate profit for the trade considering the fee."""
         try:
             if order is None:
                 return 0
@@ -191,17 +200,19 @@ class TradeExecution:
             avg_price = float(order['price'])
             symbol = order['symbol']
 
+            # Fetch current price
             current_price = self.fetch_current_price(symbol)
             if current_price is None:
                 return 0
 
+            # Calculate profit based on side
             if order['side'] == 'buy':
                 profit = (current_price - avg_price) * executed_qty
             elif order['side'] == 'sell':
                 original_price = self.get_original_buy_price(symbol, executed_qty)
                 profit = (avg_price - original_price) * executed_qty
 
-            # Consider fees
+            # Deduct fees
             fee_cost = executed_qty * avg_price * CONFIG['fee_rate']
             profit -= fee_cost
 

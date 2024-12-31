@@ -11,7 +11,7 @@ CONFIG = {
     'ema_short_period': 5,
     'ema_long_period': 15,
     'stop_loss_percent': 5.0,
-    'profit_target_percent': 1.5,
+    'profit_target_percent': 0.5,
     'max_positions': 3,
     'trailing_stop_percent': 0.005,
     'partial_tp_1': 0.5,
