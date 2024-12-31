@@ -1408,44 +1408,66 @@ class TradeExecution:
     def validate_market_conditions(self, market_data):
         """Validate market conditions specifically for spot trading"""
         try:
-            # 1. Basic market health check
-            if not self.check_market_health():
-                logging.info("❌ Basic market health check failed")
-                return False
-
-            # 2. Spread check
-            current_spread = self.check_spread(market_data)
-            logging.info(f"Current spread: {current_spread:.4%}")
-            if current_spread > CONFIG['max_spread_percent'] / 100:
-                logging.info("❌ Spread too high")
-                return False
-
-            # 3. Volume validation
-            current_volume = market_data['volume'].iloc[-1] * market_data['close'].iloc[-1]
-            volume_ma = market_data['volume'].rolling(window=CONFIG['volume_ma_period']).mean().iloc[-1]
-            logging.info(f"✅ Volume check passed: {current_volume} > {volume_ma}")
-
-            # 4. RSI-based entry conditions
+            # Log market conditions
+            current_price = market_data['close'].iloc[-1]
             trend_analysis = self.analyze_price_trend(market_data)
             rsi = trend_analysis['rsi']
 
-            # Good buying conditions:
-            # - RSI oversold (primary condition)
-            # - RSI below neutral and price showing stability
-            if rsi < CONFIG['rsi_oversold']:
+            logging.info(f"""
+            === Detailed Market Analysis ===
+            Price: {current_price:.2f} USDT
+            RSI: {rsi:.2f}
+            Volume: {market_data['volume'].iloc[-1] * current_price:.2f} USDT
+            """)
+
+            # 1. Volume Check
+            if not self.check_market_health():
+                logging.info("❌ Market health check failed")
+                return False
+
+            # 2. Spread Check
+            current_spread = self.check_spread(market_data)
+            if current_spread > CONFIG['max_spread_percent'] / 100:
+                logging.info("❌ High spread detected")
+                return False
+
+            # 3. Enhanced Entry Conditions for Spot
+            # Good buying conditions based on RSI
+            if rsi <= CONFIG['rsi_oversold']:
                 logging.info(f"✅ Strong buy signal - RSI oversold: {rsi:.2f}")
                 return True
-            elif rsi < 45:  # Below neutral, potential accumulation zone
-                price_stability = self.check_price_stability(market_data)
-                if price_stability:
-                    logging.info(f"✅ Moderate buy signal - RSI below neutral with price stability: {rsi:.2f}")
+            elif rsi < 45:  # Accumulation zone
+                # Check price stability
+                price_change = abs(market_data['close'].pct_change().iloc[-1])
+                if price_change < CONFIG['price_change_threshold']:
+                    logging.info(f"✅ Moderate buy signal - RSI in accumulation zone: {rsi:.2f}")
                     return True
 
-            logging.info(f"❌ RSI conditions not met: {rsi:.2f}")
+            # 4. Volume Validation
+            volume_check = self.validate_volume(market_data)
+            if not volume_check:
+                logging.info("❌ Volume conditions not met")
+                return False
+
+            logging.info(f"❌ No clear entry signal - RSI: {rsi:.2f}")
             return False
 
         except Exception as e:
             logging.error(f"Error validating market conditions: {str(e)}")
+            return False
+
+    def validate_volume(self, market_data):
+        """Validate volume conditions"""
+        try:
+            current_volume = market_data['volume'].iloc[-1] * market_data['close'].iloc[-1]
+            avg_volume = market_data['volume'].rolling(window=CONFIG['volume_ma_period']).mean().iloc[-1] * market_data['close'].iloc[-1]
+
+            volume_ratio = current_volume / avg_volume
+            logging.info(f"Volume ratio: {volume_ratio:.2f}")
+
+            return volume_ratio >= CONFIG['min_volume_multiplier']
+        except Exception as e:
+            logging.error(f"Error validating volume: {str(e)}")
             return False
 
     def check_price_stability(self, market_data):
