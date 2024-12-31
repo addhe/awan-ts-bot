@@ -1677,6 +1677,7 @@ def get_min_trade_amount_and_notional(exchange, symbol):
         return None, None
 
 def main(performance, trade_history):
+    global last_reported_day
     recovery_delay = 60  # seconds
     max_retries = 3
     retry_count = 0
@@ -1694,8 +1695,8 @@ def main(performance, trade_history):
             # Get current day
             current_day = datetime.now().date()
 
-            # Report balance to Telegram if not already done today
-            if last_reported_day != current_day:
+            # Check and report balance to Telegram if not already done today
+            if last_reported_day is None or last_reported_day != current_day:
                 trade_execution.report_balance_to_telegram()
                 last_reported_day = current_day
 
@@ -1804,6 +1805,9 @@ def main(performance, trade_history):
                 trade_execution.cleanup()
             except Exception as cleanup_error:
                 logging.error(f"Error during cleanup: {str(cleanup_error)}")
+
+# Ensure this is declared outside the function to maintain its state across iterations
+last_reported_day = None
 
 if __name__ == '__main__':
     performance = PerformanceMetrics()
