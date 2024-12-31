@@ -906,11 +906,20 @@ class TradeExecution:
             Final Position: {final_position:.6f}
             """)
 
-            return final_position
+            # Format the final amount
+            amount_to_trade_formatted = adjust_trade_amount(
+                final_position,
+                current_price,
+                CONFIG['min_trade_amount'],
+                CONFIG['min_notional_value']
+            )
+
+            # Return both optimal position and formatted amount
+            return final_position, amount_to_trade_formatted
 
         except Exception as e:
             logging.error(f"Error calculating position size: {str(e)}")
-            return None
+            return None, None
 
     def validate_position_size(self, amount, price):
         try:
@@ -2010,7 +2019,7 @@ def main(performance, trade_history):
                 market_data=market_data
             )
 
-            if position_sizing_result is None:
+            if position_sizing_result[0] is None or position_sizing_result[1] is None:
                 logging.warning("Failed to calculate valid position size")
                 return
 
