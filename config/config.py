@@ -8,8 +8,8 @@ CONFIG = {
     'max_daily_loss_percent': 3.0,
     'max_drawdown_percent': 5.0,
     'fee_rate': 0.0004,
-    'ema_short_period': 7,
-    'ema_long_period': 21,
+    'ema_short_period': 5,
+    'ema_long_period': 13,
 
     'stop_loss_percent': 1.0,
     'profit_target_percent': 0.5,
@@ -36,7 +36,7 @@ CONFIG = {
     'rsi_oversold': 25,
     'adx_threshold': 15,
     'momentum_threshold': 0,
-    'trend_strength_threshold': 0.5,
+    'trend_strength_threshold': 0.0005,
 
     'min_candles_required': 100,
     'cleanup_timeout': 30,
