@@ -2299,6 +2299,9 @@ def get_min_trade_amount_and_notional(exchange, symbol):
         return None, None
 
 def main(performance, trade_history):
+    """
+    Main trading loop with enhanced monitoring and safety features for 24/7 spot trading
+    """
     global last_reported_day
     recovery_delay = 60  # seconds
     max_retries = 3
@@ -2314,37 +2317,45 @@ def main(performance, trade_history):
             symbol_base = CONFIG['symbol'].split('/')[0]
             trade_execution = TradeExecution(exchange, performance, trade_history)
 
+            # Verify exchange connection
             if not trade_execution.check_exchange_connection():
                 logging.error("Exchange connection check failed")
                 raise ValueError("Exchange connection is not stable")
 
-            # Get current day
+            # Daily balance reporting and position status
             current_day = datetime.now().date()
-
-            # Check and report balance to Telegram if not already done today
             if last_reported_day is None or last_reported_day != current_day:
                 trade_execution.report_balance_to_telegram()
+
+                # Report active positions at start of day
+                position_status = trade_execution.get_position_status()
+                trade_execution.send_notification(
+                    f"Daily Status Update:\n{position_status}"
+                )
                 last_reported_day = current_day
 
-            # Add time-based check
+            # Check if trading is allowed
             if not trade_execution.can_trade_time_based():
                 logging.info("Time-based trading restrictions in effect")
-                return
+                time.sleep(60)  # Wait before next check
+                continue
 
-            # Setup proper signal handling
+            # Setup signal handlers
             trade_execution.setup_signal_handlers()
 
-            # Configuration validation
+            # Validate configuration
             global last_checked_time
             config_update, last_checked_time = check_for_config_updates(last_checked_time)
             if config_update or not validate_config():
                 logging.error("Configuration validation failed")
-                return
+                time.sleep(300)  # Wait 5 minutes before retrying
+                continue
 
-            # Performance checks
+            # Check performance metrics
             if not performance.can_trade():
-                logging.info("Trading limits reached, skipping trading cycle")
-                return
+                logging.info("Trading limits reached, waiting for reset")
+                time.sleep(300)
+                continue
 
             # Balance validation
             balance = safe_api_call(exchange.fetch_balance)
@@ -2354,86 +2365,90 @@ def main(performance, trade_history):
             usdt_balance = balance['USDT']['free']
             if usdt_balance < CONFIG['min_balance']:
                 logging.warning(f"Insufficient balance: {usdt_balance} USDT")
-                return
+                time.sleep(300)
+                continue
 
-            # Market data fetching and validation
+            # Fetch and validate market data
             market_data = trade_execution.fetch_market_data(CONFIG['symbol'], CONFIG['timeframe'])
             if not trade_execution.validate_market_data(market_data):
                 logging.error("Invalid market data structure")
-                return
+                time.sleep(60)
+                continue
 
             trade_execution.market_data = market_data
-
-            # Add market summary logging here
             trade_execution.log_market_summary(market_data)
 
-            # Comprehensive trading conditions validation
-            if not trade_execution.validate_trading_conditions(market_data):
-                logging.info(f"Trading conditions not met for {CONFIG['symbol']}")
-                return
-
-            # Position sizing and validation
+            # Check and manage existing positions first
             current_price = market_data['close'].iloc[-1]
-            position_sizing_result = trade_execution.calculate_position_size(
-                balance=usdt_balance,
-                current_price=current_price,
-                market_data=market_data
-            )
-
-            if position_sizing_result[0] is None or position_sizing_result[1] is None:
-                logging.warning("Failed to calculate valid position size")
-                return
-
-            optimal_position, amount_to_trade_formatted = position_sizing_result
-            if trade_execution.validate_entry_conditions(market_data, amount_to_trade_formatted):
-
-                # Technical analysis
-                analysis_result = trade_execution.perform_technical_analysis(market_data)
-                if analysis_result is None:
-                    logging.error("Failed to perform technical analysis")
-                    return
-
-                # Check existing positions and manage them
-                if trade_execution.has_open_positions(CONFIG['symbol']):
-                    trade_execution.manage_existing_positions(
-                        symbol=CONFIG['symbol'],
-                        current_price=current_price,
-                        market_data=market_data
-                    )
-
-                # Process trading signals
-                if trade_execution.should_execute_trade(analysis_result, market_data):
-                    trade_execution.execute_trade_with_safety(
-                        side="buy",
-                        amount=amount_to_trade_formatted,
-                        symbol=CONFIG['symbol'],
-                        current_price=current_price
-                    )
-
-                # Log trading metrics
-                trade_execution.log_trading_metrics(
-                    symbol_base=symbol_base,
-                    optimal_position=optimal_position,
-                    amount_to_trade=amount_to_trade_formatted,
-                    current_price=current_price
+            if trade_execution.has_open_positions(CONFIG['symbol']):
+                trade_execution.manage_existing_positions(
+                    symbol=CONFIG['symbol'],
+                    current_price=current_price,
+                    market_data=market_data
                 )
+
+                # Update position status every cycle
+                trade_execution.update_positions()
+
+            # Check for new trade opportunities
+            if trade_execution.validate_trading_conditions(market_data):
+                # Calculate position size
+                position_sizing_result = trade_execution.calculate_position_size(
+                    balance=usdt_balance,
+                    current_price=current_price,
+                    market_data=market_data
+                )
+
+                if position_sizing_result[0] is not None and position_sizing_result[1] is not None:
+                    optimal_position, amount_to_trade_formatted = position_sizing_result
+
+                    if trade_execution.validate_entry_conditions(market_data, amount_to_trade_formatted):
+                        # Perform technical analysis
+                        analysis_result = trade_execution.perform_technical_analysis(market_data)
+
+                        if analysis_result is not None:
+                            # Process trading signals
+                            trade_execution.process_trade_signals(
+                                market_data=market_data,
+                                symbol=CONFIG['symbol'],
+                                amount_to_trade_formatted=amount_to_trade_formatted
+                            )
+
+                            # Log trading metrics
+                            trade_execution.log_trading_metrics(
+                                symbol_base=symbol_base,
+                                optimal_position=optimal_position,
+                                amount_to_trade=amount_to_trade_formatted,
+                                current_price=current_price
+                            )
+
+            # Monitor performance
+            trade_execution.monitor_performance()
+
+            # Wait for next iteration
+            time.sleep(CONFIG['min_trade_interval'])
 
         except Exception as e:
             retry_count += 1
             error_message = f'Error in main loop (attempt {retry_count}/{max_retries}): {str(e)}'
             logging.error(error_message)
-            send_telegram_notification(error_message)
-
-            trade_execution.handle_trade_error(e, retry_count)
+            trade_execution.send_notification(error_message)
 
             if retry_count < max_retries:
                 logging.info(f"Waiting {recovery_delay} seconds before retry...")
                 time.sleep(recovery_delay)
                 recovery_delay *= 2  # Exponential backoff
+            else:
+                # Send critical error notification
+                trade_execution.send_notification(
+                    "🚨 Critical Error: Bot stopped after maximum retries. Manual intervention required."
+                )
+                raise
+
         finally:
-            # Enhanced cleanup
             try:
-                trade_execution.cleanup()
+                if 'trade_execution' in locals():
+                    trade_execution.cleanup()
             except Exception as cleanup_error:
                 logging.error(f"Error during cleanup: {str(cleanup_error)}")
 
