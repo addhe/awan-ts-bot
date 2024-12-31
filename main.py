@@ -49,6 +49,24 @@ class TradeExecution:
         self.trade_history = trade_history
         self.market_data = None
 
+    def report_balance_to_telegram(self):
+        try:
+            balance = safe_api_call(self.exchange.fetch_balance)
+            if balance is None:
+                logging.error("Failed to fetch balance")
+                return
+
+            message = "Current Balances:\n"
+            for currency, data in balance.items():
+                if isinstance(data, dict) and data.get('total', 0) > 0:
+                    message += f"{currency}: {data['total']}\n"
+
+            send_telegram_notification(message)
+
+        except Exception as e:
+            logging.error(f"Error reporting balance to Telegram: {str(e)}")
+            send_telegram_notification(f"Failed to report balance: {str(e)}")
+
     def can_trade_time_based(self):
         """Check time-based trading restrictions for 24/7 trading"""
         try:
@@ -1672,6 +1690,14 @@ def main(performance, trade_history):
 
             symbol_base = CONFIG['symbol'].split('/')[0]
             trade_execution = TradeExecution(exchange, performance, trade_history)
+
+            # Get current day
+            current_day = datetime.now().date()
+
+            # Report balance to Telegram if not already done today
+            if last_reported_day != current_day:
+                trade_execution.report_balance_to_telegram()
+                last_reported_day = current_day
 
             # Add time-based check
             if not trade_execution.can_trade_time_based():
