@@ -10,9 +10,18 @@ LOG_FILE="trade_log_spot.log"
 # Function to run the bot with logging
 run_bot() {
   echo "$(date): Starting trading bot" >> $LOG_FILE
-  python3 "$SCRIPT_PATH"
+  python3 "$SCRIPT_PATH" 2>&1 | tee -a $LOG_FILE
   EXIT_CODE=$?
   echo "$(date): Trading bot stopped with exit code $EXIT_CODE" >> $LOG_FILE
+
+  case $EXIT_CODE in
+    0)
+      echo "$(date): Bot exited normally" >> $LOG_FILE
+      ;;
+    *)
+      echo "$(date): Bot encountered an error with exit code $EXIT_CODE" >> $LOG_FILE
+      ;;
+  esac
 }
 
 # Initial checksums for the script and configuration file

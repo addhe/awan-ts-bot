@@ -424,6 +424,8 @@ class TradeExecution:
                 logging.debug("Failed spread check")
                 return False
 
+            logging.debug("All trading conditions met")
+
             return True
 
         except Exception as e:
