@@ -49,6 +49,31 @@ class TradeExecution:
         self.trade_history = trade_history
         self.market_data = None
 
+    def log_market_summary(self, market_data):
+        """Log detailed market summary"""
+        try:
+            current_price = market_data['close'].iloc[-1]
+
+            # Calculate key metrics
+            rsi = self.analyze_price_trend(market_data)['rsi']
+            volatility = self.calculate_volatility()
+            trend_strength = self.calculate_trend_strength(market_data)
+
+            summary = f"""
+    === Market Summary ===
+    Symbol: {CONFIG['symbol']}
+    Current Price: {current_price:.2f} USDT
+    RSI: {rsi:.2f}
+    Volatility: {volatility:.4%}
+    Trend Strength: {trend_strength:.4f}
+    Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+    ===================
+            """
+            logging.info(summary)
+
+        except Exception as e:
+            logging.error(f"Error logging market summary: {str(e)}")
+
     def report_balance_to_telegram(self):
         try:
             balance = safe_api_call(self.exchange.fetch_balance)
@@ -431,30 +456,106 @@ class TradeExecution:
             logging.error(f"Error during cleanup: {str(e)}")
 
     def validate_trading_conditions(self, market_data):
-        """Comprehensive trading conditions validation"""
+        """Enhanced trading conditions validation with detailed logging"""
         try:
+            # Create a conditions report
+            conditions_report = {
+                "market_health": True,
+                "spread": True,
+                "volume": True,
+                "price_movement": True,
+                "trend_strength": True,
+                "volatility": True,
+                "vwap_distance": True
+            }
+
             # Market health check
             if not self.check_market_health():
-                logging.debug("Failed market health check")
+                conditions_report["market_health"] = False
+                logging.info("❌ Market health check failed: Volume or trend conditions not met")
                 return False
 
-            # Market conditions validation
-            if not self.validate_market_conditions(market_data):
-                logging.debug("Failed market conditions validation")
-                return False
+            # Detailed market data logging
+            current_price = market_data['close'].iloc[-1]
+            current_volume = market_data['volume'].iloc[-1] * current_price
 
-            # Spread check
+            logging.info("\n=== Market Conditions Analysis ===")
+            logging.info(f"Current Price: {current_price:.2f} USDT")
+            logging.info(f"24h Volume: {current_volume:.2f} USDT")
+
+            # 1. Spread Check
             if not self.check_spread(market_data):
-                logging.debug("Failed spread check")
+                conditions_report["spread"] = False
+                logging.info("❌ Spread check failed: Current spread exceeds maximum allowed")
                 return False
 
-            logging.debug("All trading conditions met")
+            # 2. Volume Analysis
+            volume_ma = market_data['volume'].rolling(window=CONFIG['volume_ma_period']).mean().iloc[-1]
+            volume_threshold = volume_ma * CONFIG['min_volume_multiplier']
 
+            if current_volume < volume_threshold:
+                conditions_report["volume"] = False
+                logging.info(f"❌ Volume too low: {current_volume:.2f} < {volume_threshold:.2f}")
+                return False
+            logging.info(f"✅ Volume check passed: {current_volume:.2f} > {volume_threshold:.2f}")
+
+            # 3. Price Movement Check
+            price_change = abs(market_data['close'].pct_change().iloc[-1])
+            if price_change > CONFIG['price_change_threshold']:
+                conditions_report["price_movement"] = False
+                logging.info(f"❌ Price change too high: {price_change:.2%}")
+                return False
+            logging.info(f"✅ Price movement check passed: {price_change:.2%}")
+
+            # 4. Trend Strength Analysis
+            trend_strength = self.calculate_trend_strength(market_data)
+            if trend_strength < CONFIG['trend_strength_threshold']:
+                conditions_report["trend_strength"] = False
+                logging.info(f"❌ Weak trend strength: {trend_strength:.4f}")
+                return False
+            logging.info(f"✅ Trend strength check passed: {trend_strength:.4f}")
+
+            # 5. Volatility Check
+            volatility = self.calculate_volatility()
+            if volatility > CONFIG['max_volatility_threshold']:
+                conditions_report["volatility"] = False
+                logging.info(f"❌ Volatility too high: {volatility:.4%}")
+                return False
+            logging.info(f"✅ Volatility check passed: {volatility:.4%}")
+
+            # 6. VWAP Distance Check
+            vwap = self.calculate_vwap(market_data)
+            vwap_distance = abs(current_price - vwap) / vwap
+            if vwap_distance > CONFIG['max_spread_percent'] / 100:
+                conditions_report["vwap_distance"] = False
+                logging.info(f"❌ Price too far from VWAP: {vwap_distance:.4%}")
+                return False
+            logging.info(f"✅ VWAP distance check passed: {vwap_distance:.4%}")
+
+            # Log summary of all conditions
+            logging.info("\n=== Trading Conditions Summary ===")
+            for condition, status in conditions_report.items():
+                logging.info(f"{condition}: {'✅' if status else '❌'}")
+
+            logging.info("✅ All trading conditions met")
             return True
 
         except Exception as e:
             logging.error(f"Error validating trading conditions: {str(e)}")
             return False
+
+    def calculate_trend_strength(self, market_data):
+        """Calculate trend strength using multiple indicators"""
+        try:
+            # EMA trend strength
+            ema_short = self.calculate_ema(market_data, CONFIG['ema_short_period'])
+            ema_long = self.calculate_ema(market_data, CONFIG['ema_long_period'])
+            trend_strength = abs(ema_short.iloc[-1] - ema_long.iloc[-1]) / ema_long.iloc[-1]
+
+            return trend_strength
+        except Exception as e:
+            logging.error(f"Error calculating trend strength: {str(e)}")
+            return 0
 
     def implement_risk_management(self, symbol, entry_price, position_size, order):
         """Enhanced risk management implementation"""
@@ -1743,6 +1844,9 @@ def main(performance, trade_history):
                 return
 
             trade_execution.market_data = market_data
+
+            # Add market summary logging here
+            trade_execution.log_market_summary(market_data)
 
             # Comprehensive trading conditions validation
             if not trade_execution.validate_trading_conditions(market_data):
