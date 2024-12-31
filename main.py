@@ -888,12 +888,17 @@ class TradeExecution:
 
     def calculate_position_size(self, balance, current_price, market_data):
         try:
-            # Base position size calculation
+            # Calculate base position size with minimum consideration
             risk_amount = balance * (CONFIG['risk_percentage'] / 100)
             base_position = max(
-                CONFIG['min_position_size'],
+                CONFIG['min_trade_amount'],  # Use min_trade_amount instead of min_position_size
                 risk_amount / current_price
             )
+
+            # Ensure minimum notional value
+            min_notional_position = CONFIG['min_notional_value'] / current_price
+            base_position = max(base_position, min_notional_position)
+
             # Apply volatility-based adjustment
             volatility = self.calculate_volatility()
             if volatility:
@@ -913,13 +918,14 @@ class TradeExecution:
                 base_position *= impact_reduction
 
             # Apply limits
-            max_position = balance * CONFIG['max_position_size'] / current_price
-            min_position = CONFIG['min_position_size']
-            final_position = min(max_position, max(min_position, base_position))
+            max_position = min(
+                balance * CONFIG['max_position_size'] / current_price,
+                CONFIG['max_notional_value'] / current_price
+            )
+            final_position = min(max_position, base_position)
 
-            # Ensure minimum notional value
-            if final_position * current_price < CONFIG['min_notional_value']:
-                final_position = CONFIG['min_notional_value'] / current_price
+            # Ensure minimum requirements
+            final_position = max(final_position, CONFIG['min_trade_amount'])
 
             logging.info(f"""
             Position Sizing Details:
@@ -928,6 +934,7 @@ class TradeExecution:
             Trend Adjustment: {trend_adjustment:.2f}
             Market Impact: {market_impact:.4%}
             Final Position: {final_position:.6f}
+            Notional Value: {final_position * current_price:.2f} USDT
             """)
 
             # Format the final amount
@@ -938,7 +945,6 @@ class TradeExecution:
                 CONFIG['min_notional_value']
             )
 
-            # Return both optimal position and formatted amount
             return final_position, amount_to_trade_formatted
 
         except Exception as e:
@@ -1780,15 +1786,35 @@ def initialize_exchange():
         return None
 
 def adjust_trade_amount(amount_to_trade, latest_close_price, min_trade_amount, min_notional):
-    decimals_allowed = 4
-    amount_to_trade_formatted = round(amount_to_trade, decimals_allowed)
-    notional_value = amount_to_trade_formatted * latest_close_price
+    """Adjust trade amount to meet minimum requirements"""
+    try:
+        decimals_allowed = 4
+        amount_to_trade_formatted = round(amount_to_trade, decimals_allowed)
+        notional_value = amount_to_trade_formatted * latest_close_price
 
-    if amount_to_trade_formatted < min_trade_amount or notional_value < min_notional:
-        logging.warning("Adjusted trade amount or notional value is below minimum thresholds, skipping trade.")
+        # If amount is below minimum, increase it to minimum
+        if amount_to_trade_formatted < min_trade_amount:
+            amount_to_trade_formatted = min_trade_amount
+            notional_value = amount_to_trade_formatted * latest_close_price
+            logging.info(f"Adjusted amount up to minimum: {amount_to_trade_formatted}")
+
+        # If notional value is below minimum, adjust amount accordingly
+        if notional_value < min_notional:
+            amount_to_trade_formatted = math.ceil((min_notional / latest_close_price) * 10000) / 10000
+            logging.info(f"Adjusted amount for minimum notional value: {amount_to_trade_formatted}")
+
+        # Final validation
+        final_notional = amount_to_trade_formatted * latest_close_price
+        if amount_to_trade_formatted >= min_trade_amount and final_notional >= min_notional:
+            logging.info(f"Final trade amount: {amount_to_trade_formatted} ({final_notional} USDT)")
+            return amount_to_trade_formatted
+
+        logging.warning(f"Could not meet minimum requirements: Amount={amount_to_trade_formatted}, Notional={final_notional}")
         return None
 
-    return amount_to_trade_formatted
+    except Exception as e:
+        logging.error(f"Error in adjust_trade_amount: {str(e)}")
+        return None
 
 def safe_api_call(func, *args, **kwargs):
     retry_count = kwargs.pop('retry_count', 3)
