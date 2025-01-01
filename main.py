@@ -47,22 +47,22 @@ def setup_logging() -> None:
 def initialize_api_credentials() -> Tuple[str, str]:
     """
     Initialize API credentials from environment variables.
-    
+
     Returns:
         Tuple[str, str]: API key and secret
-        
+
     Raises:
         SystemExit: If credentials are not found
     """
     api_key = os.environ.get('API_KEY_SPOT_BINANCE')
     api_secret = os.environ.get('API_SECRET_SPOT_BINANCE')
-    
+
     if api_key is None or api_secret is None:
         error_message = 'API credentials not found in environment variables'
         logging.error(error_message)
         send_telegram_notification(error_message)
         sys.exit(1)
-        
+
     return api_key, api_secret
 
 # Setup logging and API credentials
@@ -85,17 +85,29 @@ signal.signal(signal.SIGINT, handle_exit_signal)
 
 class SpotTradeManager:
     """Manages spot trading operations with enhanced error handling and monitoring."""
-    
+
     def __init__(self, exchange: Any, performance: Any, trade_history: Dict) -> None:
         """Initialize trading components with proper validation."""
-        if not all([exchange, performance, trade_history]):
-            raise ValueError("All parameters must be provided")
-            
+        # Detailed validation of each parameter
+        if exchange is None:
+            raise ValueError("Exchange instance must be provided")
+        if performance is None:
+            raise ValueError("Performance metrics instance must be provided")
+        if trade_history is None:
+            raise ValueError("Trade history dictionary must be provided")
+
+        # Log parameter states for debugging
+        logging.debug(f"Initializing SpotTradeManager with:")
+        logging.debug(f"Exchange type: {type(exchange)}")
+        logging.debug(f"Performance type: {type(performance)}")
+        logging.debug(f"Trade history type: {type(trade_history)}")
+        logging.debug(f"Trade history content: {trade_history}")
+
         self.exchange = exchange
         self.performance = performance
         self.trade_history = trade_history
         self.market_data = None
-        
+
         # Initialize trading components
         self.executor = TradeExecutor(exchange, performance, trade_history)
         self.market_analyzer = MarketAnalyzer(exchange)
@@ -172,7 +184,7 @@ class SpotTradeManager:
 
 class PerformanceMetrics:
     """Tracks and manages trading performance metrics."""
-    
+
     def __init__(self) -> None:
         self.metrics_file = 'performance_metrics_spot.json'
         self.load_metrics()
@@ -325,7 +337,7 @@ def adjust_trade_amount(amount_to_trade: float, latest_close_price: float,
 def safe_api_call(func: Any, *args: Any, **kwargs: Any) -> Optional[Any]:
     """
     Execute API calls with enhanced error handling and retry logic.
-    
+
     Args:
         func: The API function to call
         *args: Positional arguments for the function
@@ -333,10 +345,10 @@ def safe_api_call(func: Any, *args: Any, **kwargs: Any) -> Optional[Any]:
             - retry_count: Number of retry attempts (default: 3)
             - retry_delay: Initial delay between retries in seconds (default: 5)
             - exponential_backoff: Whether to use exponential backoff (default: True)
-    
+
     Returns:
         The result of the API call if successful, None otherwise
-    
+
     Raises:
         ccxt.ExchangeError: For critical exchange errors
         Exception: For unexpected errors
@@ -344,7 +356,7 @@ def safe_api_call(func: Any, *args: Any, **kwargs: Any) -> Optional[Any]:
     retry_count = kwargs.pop('retry_count', 3)
     retry_delay = kwargs.pop('retry_delay', 5)
     exponential_backoff = kwargs.pop('exponential_backoff', True)
-    
+
     last_error = None
     func_name = getattr(func, '__name__', str(func))
 
@@ -645,11 +657,19 @@ def main(performance: PerformanceMetrics, trade_history: dict) -> None:
 
             # Initialize trade manager with validated components
             try:
-                trade_manager = SpotTradeManager(exchange, performance, trade_history)
+                logging.info("Attempting to initialize SpotTradeManager...")
+                logging.info(f"Exchange initialized: {exchange is not None}")
+                logging.info(f"Performance metrics initialized: {performance is not None}")
+                logging.info(f"Trade history initialized: {trade_history is not None}")
+                trade_manager = SpotTradeManager(exchange, performance.metrics, trade_history.history)
+                logging.info("SpotTradeManager initialized successfully")
             except ValueError as e:
                 logging.error(f"Failed to initialize trade manager: {str(e)}")
+                logging.error(f"Exchange: {type(exchange) if exchange else 'None'}")
+                logging.error(f"Performance: {type(performance) if performance else 'None'}")
+                logging.error(f"Trade history: {type(trade_history) if trade_history else 'None'}")
                 return
-            
+
             # Verify trade manager connection
             if not trade_manager.executor.check_exchange_connection():
                 raise ExchangeConnectionError("Exchange connection is not stable")
@@ -657,7 +677,7 @@ def main(performance: PerformanceMetrics, trade_history: dict) -> None:
             # Setup and validation
             trade_manager.setup_signal_handlers()
             perform_daily_operations(trade_manager, datetime.now().date())
-            
+
             if not validate_trading_session(trade_manager, performance):
                 return
 
