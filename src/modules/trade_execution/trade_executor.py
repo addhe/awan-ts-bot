@@ -76,8 +76,8 @@ class TradeExecutor:
         self.performance = performance
         self.trade_history = trade_history
         self.market_data: Optional[pd.DataFrame] = None
-        self.market_analyzer = MarketAnalyzer()
-        self.market_validator = MarketValidation()
+        self.market_analyzer = MarketAnalyzer(exchange)
+        self.market_validator = MarketValidation(exchange)
         self.risk_manager = RiskManager(exchange, trade_history)
 
     def _validate_trade_prerequisites(self, side: str, amount: float, symbol: str) -> bool:
