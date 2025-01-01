@@ -86,7 +86,7 @@ signal.signal(signal.SIGINT, handle_exit_signal)
 class SpotTradeManager:
     """Manages spot trading operations with enhanced error handling and monitoring."""
 
-    def __init__(self, exchange: Any, performance: Any, trade_history: Dict) -> None:
+    def __init__(self, exchange: Any, performance: Any, trade_history: TradeHistory) -> None:
         """Initialize trading components with proper validation."""
         # Detailed validation of each parameter
         if exchange is None:
@@ -94,18 +94,18 @@ class SpotTradeManager:
         if performance is None:
             raise ValueError("Performance metrics instance must be provided")
         if trade_history is None:
-            raise ValueError("Trade history dictionary must be provided")
+            raise ValueError("Trade history instance must be provided")
 
         # Log parameter states for debugging
         logging.debug(f"Initializing SpotTradeManager with:")
         logging.debug(f"Exchange type: {type(exchange)}")
         logging.debug(f"Performance type: {type(performance)}")
         logging.debug(f"Trade history type: {type(trade_history)}")
-        logging.debug(f"Trade history content: {trade_history}")
+        logging.debug(f"Trade history content: {trade_history.history}")
 
         self.exchange = exchange
         self.performance = performance
-        self.trade_history = trade_history
+        self.trade_history = trade_history.history
         self.market_data = None
 
         # Initialize trading components
@@ -633,7 +633,7 @@ def execute_trading_cycle(
         current_price=current_price
     )
 
-def main(performance: PerformanceMetrics, trade_history: dict) -> None:
+def main(performance: PerformanceMetrics, trade_history: TradeHistory) -> None:
     """Enhanced main trading loop with proper error handling and monitoring."""
     recovery_delay = 60  # seconds
     max_retries = 3
@@ -661,7 +661,7 @@ def main(performance: PerformanceMetrics, trade_history: dict) -> None:
                 logging.info(f"Exchange initialized: {exchange is not None}")
                 logging.info(f"Performance metrics initialized: {performance is not None}")
                 logging.info(f"Trade history initialized: {trade_history is not None}")
-                trade_manager = SpotTradeManager(exchange, performance.metrics, trade_history.history)
+                trade_manager = SpotTradeManager(exchange, performance.metrics, trade_history)
                 logging.info("SpotTradeManager initialized successfully")
             except ValueError as e:
                 logging.error(f"Failed to initialize trade manager: {str(e)}")
@@ -764,5 +764,5 @@ if __name__ == '__main__':
     trade_history = TradeHistory()
     last_checked_time = 0
     while True:
-        main(performance, trade_history.history)
+        main(performance, trade_history)
         time.sleep(60)
