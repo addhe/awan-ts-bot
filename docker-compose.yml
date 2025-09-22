@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: trading_bot_app
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    networks:
+      - trading-net
+
+  redis:
+    image: "redis:7-alpine"
+    container_name: trading_bot_redis
+    restart: unless-stopped
+    ports:
+      # Exposing Redis port for potential external debugging, not recommended for production
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - trading-net
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  trading-net:
+    driver: bridge

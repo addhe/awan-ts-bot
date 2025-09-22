@@ -2,7 +2,7 @@ import os
 import logging
 import requests
 
-import src.modules.fetch_position_details as fetch_position_details
+from . import fetch_position_details
 
 TELEGRAM_CONFIG = {
     'bot_token': os.environ.get('TELEGRAM_BOT_SPOT_TOKEN'),
@@ -25,7 +25,7 @@ def send_telegram_notification(message, exchange=None):
                 usdt_balance = balance.get('USDT', {}).get('free', 0)
                 extra_info += f"\nCurrent Balance: {usdt_balance:.2f} USDT"
 
-                position_details = fetch_position_details(exchange)
+                position_details = fetch_position_details.fetch_position_details(exchange)
                 if position_details:
                     position_info = (f"Buy Positions: {position_details['buy']} "
                                      f"({position_details['total_buy']:.4f} contracts)\n"

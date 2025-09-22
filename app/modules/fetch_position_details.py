@@ -1,8 +1,8 @@
 import logging
-from config.config import CONFIG
+from app.config import CONFIG
 
 def fetch_position_details(exchange):
-    positions = exchange.fetch_positions([CONFIG['symbol']])
+    positions = exchange.fetch_positions([CONFIG['trading']['symbol']])
     position_details = {
         'buy': 0,
         'sell': 0,
