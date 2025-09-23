@@ -25,4 +25,4 @@ COPY . .
 # In a containerized environment, it's often better to let the script exit
 # and have the orchestrator (like Docker Compose or Kubernetes) handle restarts.
 # This will be refactored later.
-CMD [ "python", "app/main.py" ]
+CMD [ "python", "run.py" ]
