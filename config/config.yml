@@ -4,6 +4,11 @@ app:
   # AI service URL and credentials will go here
   ai_service_url: "http://localhost:5001/predict"
 
+# GCP configuration for Vertex AI
+gcp:
+  project_id: "your-gcp-project-id" # Should be loaded from env
+  region: "us-central1" # Or your preferred region
+
 # Redis configuration
 redis:
   host: "redis"

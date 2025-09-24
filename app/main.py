@@ -53,11 +53,14 @@ class TradeExecution:
         validated_positions = {}
         for pos_id, pos_data in positions.items():
             try:
+                # Make the conversion robust: only convert if it's a string
+                if isinstance(pos_data.get('entry_time'), str):
+                    pos_data['entry_time'] = datetime.fromisoformat(pos_data['entry_time'])
+
                 pos_data['entry_price'] = float(pos_data['entry_price'])
                 pos_data['amount'] = float(pos_data['amount'])
                 pos_data['take_profit'] = float(pos_data['take_profit']) if pos_data.get('take_profit') else None
                 pos_data['stop_loss'] = float(pos_data['stop_loss']) if pos_data.get('stop_loss') else None
-                pos_data['entry_time'] = datetime.fromisoformat(pos_data['entry_time'])
                 validated_positions[pos_id] = pos_data
             except (ValueError, TypeError) as e:
                 logging.error(f"Could not validate position {pos_id} from Redis. Error: {e}. Data: {pos_data}")
@@ -128,12 +131,12 @@ class TradeExecution:
                     logging.warning(f"Could not fetch price for {symbol}, skipping check.")
                     continue
 
-                if current_price >= position['take_profit']:
+                if position.get('take_profit') and current_price >= position['take_profit']:
                     logging.info(f"Take profit for {symbol} triggered at {current_price}")
                     self.execute_trade("sell", position['amount'], symbol)
                     continue
 
-                if current_price <= position['stop_loss']:
+                if position.get('stop_loss') and current_price <= position['stop_loss']:
                     logging.info(f"Stop loss for {symbol} triggered at {current_price}")
                     self.execute_trade("sell", position['amount'], symbol)
                     continue
@@ -144,9 +147,7 @@ class TradeExecution:
         """Executes a trade for a given symbol."""
         logging.info(f"Attempting to execute {side} order for {amount} of {symbol}")
         try:
-            # Here you would have pre-trade validation logic, e.g., checking balance
             if side == "buy":
-                # For simplicity, using market order. Could be limit order.
                 order = self.exchange.create_market_buy_order(symbol, amount)
             elif side == "sell":
                 order = self.exchange.create_market_sell_order(symbol, amount)
@@ -320,13 +321,10 @@ def run_trading_cycle():
         logging.info(f"Processing signal: {action} {asset}")
 
         if action.upper() == 'BUY':
-            # Simplified position sizing: use a fixed amount from config
-            # A more advanced implementation would calculate this dynamically
             amount_to_trade = CONFIG['trading'].get('min_trade_amount', 0.001)
             trade_execution.execute_trade('buy', amount_to_trade, asset)
 
         elif action.upper() == 'SELL':
-            # Find the active position for this asset and sell it
             position_to_sell = None
             for pos_id, pos in trade_execution.active_positions.items():
                 if pos['symbol'] == asset:

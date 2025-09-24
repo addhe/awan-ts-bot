@@ -36,6 +36,11 @@ def load_config():
     config['telegram']['bot_token'] = os.environ.get('TELEGRAM_BOT_TOKEN')
     config['telegram']['chat_id'] = os.environ.get('TELEGRAM_CHAT_ID')
 
+    # GCP credentials
+    config['gcp']['project_id'] = os.environ.get('GCP_PROJECT_ID')
+    config['gcp']['region'] = os.environ.get('GCP_REGION')
+
+
     # --- Validate essential configurations ---
     if not config.get('binance', {}).get('api_key') or not config.get('binance', {}).get('api_secret'):
         logging.warning("Binance API key/secret not found in environment variables. Trading will not be possible.")

@@ -21,7 +21,6 @@ class RedisClient:
                 host=host,
                 port=port,
                 db=db,
-                charset="utf-8",
                 decode_responses=True # Decode responses to utf-8
             )
             # Ping the server to check the connection
