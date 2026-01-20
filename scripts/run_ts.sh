@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Paths to the Python script and configuration file
-SCRIPT_PATH="/root/awan-ts-bot/main.py"
-CONFIG_PATH="/root/awan-ts-bot/config/config.py"
+SCRIPT_PATH="app/main.py"
+CONFIG_PATH="config/config.py"
 
 # Define logging file
 LOG_FILE="trade_log_spot.log"
